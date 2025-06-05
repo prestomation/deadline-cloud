@@ -173,6 +173,173 @@ def test_cli_job_list(fresh_deadline_config):
         )
         assert result.exit_code == 0
 
+
+def test_cli_job_list_explicit_farm_and_queue_id(fresh_deadline_config):
+    """
+    Confirm that the CLI interface prints out the expected list of
+    jobs, given mock data.
+    """
+    with patch.object(api._session, "get_boto3_session") as session_mock:
+        session_mock().client("deadline").search_jobs.return_value = {
+            "jobs": MOCK_JOBS_LIST,
+            "totalResults": 12,
+            "itemOffset": len(MOCK_JOBS_LIST),
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["job", "list", "--farm-id", MOCK_FARM_ID, "--queue-id", MOCK_QUEUE_ID],
+        )
+
+        assert (
+            result.output
+            == """Displaying 2 of 12 Jobs starting at 0
+
+- name: CLI Job
+  jobId: job-aaf4cdf8aae242f58fb84c5bb19f199b
+  taskRunStatus: RUNNING
+  startedAt: 2023-01-27 07:37:53+00:00
+  endedAt: 2023-01-27 07:39:17+00:00
+  createdBy: b801f3c0-c071-70bc-b869-6804bc732408
+  createdAt: 2023-01-27 07:34:41+00:00
+- name: CLI Job
+  jobId: job-0d239749fa05435f90263b3a8be54144
+  taskRunStatus: COMPLETED
+  startedAt: 2023-01-27 07:27:06+00:00
+  endedAt: 2023-01-27 07:29:51+00:00
+  createdBy: b801f3c0-c071-70bc-b869-6804bc732408
+  createdAt: 2023-01-27 07:24:22+00:00
+
+"""
+        )
+        assert result.exit_code == 0
+
+
+def test_cli_job_list_override_profile(fresh_deadline_config):
+    """
+    Confirms that the --profile option overrides the option to boto3.Session.
+    """
+    # set the farm id for the overridden profile
+    config.set_setting("defaults.aws_profile_name", "NonDefaultProfileName")
+    config.set_setting("defaults.farm_id", "farm-overriddenid")
+    config.set_setting("defaults.queue_id", "queue-overriddenid")
+    config.set_setting("defaults.aws_profile_name", "DifferentProfileName")
+
+    with patch.object(boto3, "Session") as session_mock:
+        session_mock().client("deadline").search_jobs.return_value = {
+            "jobs": MOCK_JOBS_LIST,
+            "totalResults": 12,
+            "nextPage": len(MOCK_JOBS_LIST),
+        }
+        session_mock.reset_mock()
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["job", "list", "--profile", "NonDefaultProfileName"])
+
+        assert result.exit_code == 0
+        session_mock.assert_called_once_with(profile_name="NonDefaultProfileName")
+        session_mock().client().search_jobs.assert_called_once_with(
+            farmId="farm-overriddenid",
+            queueIds=["queue-overriddenid"],
+            itemOffset=0,
+            pageSize=5,
+            sortExpressions=[{"fieldSort": {"name": "CREATED_AT", "sortOrder": "DESCENDING"}}],
+        )
+
+
+def test_cli_job_list_no_farm_id(fresh_deadline_config):
+    with patch.object(api._session, "get_boto3_session") as session_mock:
+        session_mock().client("deadline").search_jobs.return_value = {
+            "jobs": MOCK_JOBS_LIST,
+            "totalResults": 12,
+            "nextPage": len(MOCK_JOBS_LIST),
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["job", "list"])
+
+        assert "Missing '--farm-id' or default Farm ID configuration" in result.output
+        assert result.exit_code != 0
+
+
+def test_cli_job_list_no_queue_id(fresh_deadline_config):
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+
+    with patch.object(api._session, "get_boto3_session") as session_mock:
+        session_mock().client("deadline").search_jobs.return_value = {
+            "jobs": MOCK_JOBS_LIST,
+            "totalResults": 12,
+            "nextPage": len(MOCK_JOBS_LIST),
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["job", "list"])
+
+        assert "Missing '--queue-id' or default Queue ID configuration" in result.output
+        assert result.exit_code != 0
+
+
+def test_cli_job_list_client_error(fresh_deadline_config):
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch.object(api._session, "get_boto3_session") as session_mock:
+        session_mock().client("deadline").search_jobs.side_effect = ClientError(
+            {"Error": {"Message": "A botocore client error"}}, "client error"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["job", "list"])
+
+        assert "Failed to get Jobs" in result.output
+        assert "A botocore client error" in result.output
+        assert result.exit_code != 0
+
+
+def test_cli_job_get(fresh_deadline_config):
+    """
+    Confirm that the CLI interface prints out the expected job, given mock data.
+    """
+
+    with patch.object(api._session, "get_boto3_session") as session_mock:
+        session_mock().client("deadline").get_job.return_value = MOCK_JOBS_LIST[0]
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "job",
+                "get",
+                "--farm-id",
+                MOCK_FARM_ID,
+                "--queue-id",
+                MOCK_QUEUE_ID,
+                "--job-id",
+                str(MOCK_JOBS_LIST[0]["jobId"]),
+            ],
+        )
+
+        assert (
+            result.output
+            == """jobId: job-aaf4cdf8aae242f58fb84c5bb19f199b
+name: CLI Job
+taskRunStatus: RUNNING
+lifecycleStatus: SUCCEEDED
+createdBy: b801f3c0-c071-70bc-b869-6804bc732408
+createdAt: 2023-01-27 07:34:41+00:00
+startedAt: 2023-01-27 07:37:53+00:00
+endedAt: 2023-01-27 07:39:17+00:00
+priority: 50
+
+"""
+        )
+        session_mock().client("deadline").get_job.assert_called_once_with(
+            farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOBS_LIST[0]["jobId"]
+        )
+        assert result.exit_code == 0
+
+
 def test_cli_job_logs_with_session_id(fresh_deadline_config):
     """
     Test job logs command with explicit session ID.
