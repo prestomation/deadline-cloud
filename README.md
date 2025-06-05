@@ -186,6 +186,55 @@ and removing them by logging out:
 $ deadline auth logout
 ```
 
+## Job Monitoring and Logs
+
+### Waiting for Job Completion
+
+After submitting a job, you can wait for it to complete using the `wait` command:
+
+```sh
+# Wait for a job to complete with default settings
+$ deadline job wait --job-id job-12345
+
+# Customize the polling interval (default is 10 seconds)
+$ deadline job wait --job-id job-12345 --poll-interval 30
+
+# Set a timeout (default is 0, meaning no timeout)
+$ deadline job wait --job-id job-12345 --timeout 3600
+
+# Get the result in JSON format
+$ deadline job wait --job-id job-12345 --output json
+```
+
+The command blocks until the job reaches a terminal state (SUCCEEDED, FAILED, CANCELED, or NOT_COMPATIBLE), then returns information about the job's status and any failed tasks. When using a Deadline Cloud monitor profile, this command will use the Queue role credentials to access job information.
+
+### Retrieving Job Logs
+
+You can monitor job status and retrieve logs using the CLI:
+
+```sh
+# Get logs for a specific session
+$ deadline job logs --session-id session-12345
+
+# Get logs for a job (automatically uses the only session if there's just one)
+$ deadline job logs --job-id job-12345
+
+# Limit the number of log lines returned
+$ deadline job logs --session-id session-12345 --limit 50
+
+# Filter logs by time range
+$ deadline job logs --session-id session-12345 --start-time 2023-01-01T12:00:00Z --end-time 2023-01-01T13:00:00Z
+
+# Get logs in JSON format
+$ deadline job logs --session-id session-12345 --output json
+
+# Paginate through logs
+$ deadline job logs --session-id session-12345 --next-token next-token-value
+```
+
+When using a Deadline Cloud monitor profile, the `job logs` command will use the Queue role credentials to read logs. Otherwise, the chosen profile credentials are used for all API invocations. This allows you to access logs with the appropriate permissions based on your authentication method.
+
+
 ## AWS Credentials Integration
 
 You can use the Deadline Cloud client to obtain temporary AWS credentials for a queue and use them with the AWS CLI or SDK. This enables you to create AWS profiles that have queue-specific permissions for use in programmatic workflows.

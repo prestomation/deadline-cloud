@@ -6,7 +6,7 @@ Tests for the CLI job logs command.
 
 import json
 import datetime
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from click.testing import CliRunner
 
@@ -61,7 +61,9 @@ def test_cli_job_logs_verbose(fresh_deadline_config):
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
-    with patch("deadline.client.api.get_session_logs") as mock_get_logs:
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user:
+        mock_get_user.return_value = (None, None)
         mock_get_logs.return_value = SAMPLE_LOG_RESULT
 
         runner = CliRunner()
@@ -92,7 +94,9 @@ def test_cli_job_logs_json(fresh_deadline_config):
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
-    with patch("deadline.client.api.get_session_logs") as mock_get_logs:
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user:
+        mock_get_user.return_value = (None, None)
         mock_get_logs.return_value = SAMPLE_LOG_RESULT
 
         runner = CliRunner()
@@ -134,7 +138,9 @@ def test_cli_job_logs_empty(fresh_deadline_config):
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
-    with patch("deadline.client.api.get_session_logs") as mock_get_logs:
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user:
+        mock_get_user.return_value = (None, None)
         mock_get_logs.return_value = EMPTY_LOG_RESULT
 
         runner = CliRunner()
@@ -153,7 +159,9 @@ def test_cli_job_logs_json_empty(fresh_deadline_config):
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
-    with patch("deadline.client.api.get_session_logs") as mock_get_logs:
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user:
+        mock_get_user.return_value = (None, None)
         mock_get_logs.return_value = EMPTY_LOG_RESULT
 
         runner = CliRunner()
@@ -188,7 +196,9 @@ def test_cli_job_logs_json_error(fresh_deadline_config):
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
-    with patch("deadline.client.api.get_session_logs") as mock_get_logs:
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user:
+        mock_get_user.return_value = (None, None)
         mock_get_logs.side_effect = Exception("Test error message")
 
         runner = CliRunner()
@@ -212,7 +222,9 @@ def test_cli_job_logs_with_time_params(fresh_deadline_config):
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
-    with patch("deadline.client.api.get_session_logs") as mock_get_logs:
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user:
+        mock_get_user.return_value = (None, None)
         mock_get_logs.return_value = SAMPLE_LOG_RESULT
 
         runner = CliRunner()
@@ -246,7 +258,9 @@ def test_cli_job_logs_with_next_token(fresh_deadline_config):
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
-    with patch("deadline.client.api.get_session_logs") as mock_get_logs:
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user:
+        mock_get_user.return_value = (None, None)
         mock_get_logs.return_value = SAMPLE_LOG_RESULT
 
         runner = CliRunner()
@@ -268,3 +282,62 @@ def test_cli_job_logs_with_next_token(fresh_deadline_config):
         mock_get_logs.assert_called_once()
         args, kwargs = mock_get_logs.call_args
         assert kwargs["next_token"] == "test-token"
+
+
+def test_cli_job_logs_with_monitor_user(fresh_deadline_config):
+    """
+    Test that logs CLI works correctly when using Deadline Cloud monitor credentials.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api._job_monitoring.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user, \
+         patch("deadline.client.api._job_monitoring.get_queue_user_boto3_session") as mock_get_session, \
+         patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_boto3_client:
+        # Mock monitor user credentials
+        mock_get_user.return_value = ("user-123", "identity-store-456")
+        mock_session = MagicMock()
+        mock_logs_client = MagicMock()
+        mock_session.client.return_value = mock_logs_client
+        mock_get_session.return_value = mock_session
+        mock_get_logs.return_value = SAMPLE_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["job", "logs", "--session-id", "test-session", "--limit", "100"]
+        )
+
+        assert result.exit_code == 0
+        assert "Retrieving logs for session" in result.output
+        
+        # Verify the queue user session was created
+        mock_get_session.assert_called_once()
+        args, kwargs = mock_get_session.call_args
+        assert kwargs["farm_id"] == MOCK_FARM_ID
+        assert kwargs["queue_id"] == MOCK_QUEUE_ID
+
+
+def test_cli_job_logs_with_monitor_user_error(fresh_deadline_config):
+    """
+    Test that logs CLI handles errors when getting queue credentials.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api._job_monitoring.get_session_logs") as mock_get_logs, \
+         patch("deadline.client.api._job_monitoring.get_user_and_identity_store_id") as mock_get_user, \
+         patch("deadline.client.api._job_monitoring.get_queue_user_boto3_session") as mock_get_session, \
+         patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_boto3_client:
+        # Mock monitor user credentials but make session creation fail
+        mock_get_user.return_value = ("user-123", "identity-store-456")
+        mock_get_session.side_effect = Exception("Failed to get queue credentials")
+        
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["job", "logs", "--session-id", "test-session"]
+        )
+
+        # Should fail with non-zero exit code
+        assert result.exit_code != 0
+        assert "Failed to get queue credentials" in result.output

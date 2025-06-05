@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from botocore.exceptions import ClientError
 
 from deadline.client.exceptions import DeadlineOperationError
-from deadline.client.api._session import get_boto3_client, get_queue_user_boto3_session
+from deadline.client.api._session import (
+    get_boto3_client,
+    get_queue_user_boto3_session,
+    get_user_and_identity_store_id,
+)
 
 
 @dataclass
@@ -81,6 +85,10 @@ def wait_for_job_completion(
     This function blocks until the job's taskRunStatus reaches a terminal state
     (SUCCEEDED, FAILED, CANCELED, ARCHIVED, or NOT_COMPATIBLE), then returns a JobCompletionResult
     object containing the final status and any failed tasks.
+
+    When using a Deadline Cloud monitor profile, this function will use the Queue role
+    credentials to read logs. Otherwise, the chosen profile credentials are used for all
+    API invocations.
 
     Args:
         farm_id: The ID of the farm containing the job.
@@ -214,16 +222,22 @@ def get_session_logs(
     # Get the Deadline client to use for getting queue credentials
     deadline = get_boto3_client("deadline", config=config)
 
-    # Get a session with queue user credentials
-    try:
-        queue_session = get_queue_user_boto3_session(
-            deadline=deadline, config=config, farm_id=farm_id, queue_id=queue_id
-        )
-    except Exception as e:
-        raise DeadlineOperationError(f"Failed to get queue credentials: {e}")
+    # Check if we have user and identity store ID (from Deadline Cloud monitor)
+    user_id, identity_store_id = get_user_and_identity_store_id(config=config)
 
-    # Create CloudWatch Logs client with queue credentials
-    logs_client = queue_session.client("logs")
+    # Create logs client - either with queue credentials or directly
+    if user_id and identity_store_id:
+        # Get a session with queue user credentials
+        try:
+            queue_session = get_queue_user_boto3_session(
+                deadline=deadline, config=config, farm_id=farm_id, queue_id=queue_id
+            )
+            logs_client = queue_session.client("logs")
+        except Exception as e:
+            raise DeadlineOperationError(f"Failed to get queue credentials: {e}")
+    else:
+        # Use the same boto session as for deadline
+        logs_client = get_boto3_client("logs", config=config)
 
     # Construct the log group name
     log_group_name = f"/aws/deadline/{farm_id}/{queue_id}"

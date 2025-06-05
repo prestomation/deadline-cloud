@@ -725,7 +725,7 @@ def job_download_output(step_id, task_id, output, **args):
             raise DeadlineOperationError(f"Failed to download output:\n{e}") from e
 
 
-@cli_job.command(name="wait-for-completion")
+@cli_job.command(name="wait")
 @click.option("--profile", help="The AWS profile to use.")
 @click.option("--farm-id", help="The farm to use.")
 @click.option("--queue-id", help="The queue to use.")
