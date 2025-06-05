@@ -9,7 +9,6 @@ import datetime
 from unittest.mock import ANY, MagicMock, patch
 
 from click.testing import CliRunner
-from dateutil.tz import tzutc
 
 from deadline.client import api
 from deadline.client.cli import main
@@ -367,15 +366,15 @@ def test_cli_job_logs_with_session_id(fresh_deadline_config):
         mock_get_logs.return_value = SessionLogResult(
             events=[
                 LogEvent(
-                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 45, tzinfo=tzutc()),
+                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 45),
                     message="Test log message 1",
-                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 46, tzinfo=tzutc()),
+                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 46),
                     event_id="event-1",
                 ),
                 LogEvent(
-                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 50, tzinfo=tzutc()),
+                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 50),
                     message="Test log message 2",
-                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 51, tzinfo=tzutc()),
+                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 51),
                     event_id="event-2",
                 ),
             ],
@@ -440,9 +439,9 @@ def test_cli_job_logs_with_job_id_single_session(fresh_deadline_config):
         mock_get_logs.return_value = api.SessionLogResult(
             events=[
                 api.LogEvent(
-                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 45, tzinfo=tzutc()),
+                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 45),
                     message="Test log message",
-                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 46, tzinfo=tzutc()),
+                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 46),
                     event_id="event-1",
                 ),
             ],
@@ -507,11 +506,11 @@ def test_cli_job_logs_with_job_id_multiple_sessions(fresh_deadline_config):
                 "sessions": [
                     {
                         "sessionId": "session-1",
-                        "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0, tzinfo=tzutc()),
+                        "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0),
                     },
                     {
                         "sessionId": "session-2",
-                        "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0, tzinfo=tzutc()),
+                        "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0),
                     },
                 ]
             }
@@ -521,9 +520,9 @@ def test_cli_job_logs_with_job_id_multiple_sessions(fresh_deadline_config):
         mock_get_logs.return_value = api.SessionLogResult(
             events=[
                 api.LogEvent(
-                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 45, tzinfo=tzutc()),
+                    timestamp=datetime.datetime(2023, 1, 27, 7, 24, 45),
                     message="Test log message",
-                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 46, tzinfo=tzutc()),
+                    ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 46),
                     event_id="event-1",
                 ),
             ],
@@ -625,7 +624,7 @@ def test_cli_job_logs_with_pagination(fresh_deadline_config):
                 "sessions": [
                     {
                         "sessionId": "session-1",
-                        "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0, tzinfo=tzutc()),
+                        "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0),
                     }
                 ]
             },
@@ -633,7 +632,7 @@ def test_cli_job_logs_with_pagination(fresh_deadline_config):
                 "sessions": [
                     {
                         "sessionId": "session-2",
-                        "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0, tzinfo=tzutc()),
+                        "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0),
                     }
                 ]
             },
@@ -643,9 +642,9 @@ def test_cli_job_logs_with_pagination(fresh_deadline_config):
         mock_get_logs.return_value = api.SessionLogResult(
             events=[
                 api.LogEvent(
-                    timestamp=datetime.datetime(2023, 1, 27, 8, 0, 0, tzinfo=tzutc()),
+                    timestamp=datetime.datetime(2023, 1, 27, 8, 0, 0),
                     message="Test log message",
-                    ingestion_time=datetime.datetime(2023, 1, 27, 8, 0, 1, tzinfo=tzutc()),
+                    ingestion_time=datetime.datetime(2023, 1, 27, 8, 0, 1),
                     event_id="event-1",
                 ),
             ],

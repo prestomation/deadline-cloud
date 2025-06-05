@@ -7,8 +7,6 @@ Tests for the job monitoring API functions.
 import datetime
 from unittest.mock import patch, MagicMock
 
-from dateutil.tz import tzutc
-
 from deadline.client.api._job_monitoring import (
     wait_for_job_completion,
     get_session_logs,
@@ -29,8 +27,8 @@ MOCK_JOB_RUNNING = {
     "taskRunStatus": "RUNNING",
     "lifecycleStatus": "ACTIVE",
     "createdBy": "test-user",
-    "createdAt": datetime.datetime(2023, 1, 27, 7, 34, 41, tzinfo=tzutc()),
-    "startedAt": datetime.datetime(2023, 1, 27, 7, 37, 53, tzinfo=tzutc()),
+    "createdAt": datetime.datetime(2023, 1, 27, 7, 34, 41),
+    "startedAt": datetime.datetime(2023, 1, 27, 7, 37, 53),
 }
 
 MOCK_JOB_SUCCEEDED = {
@@ -39,9 +37,9 @@ MOCK_JOB_SUCCEEDED = {
     "taskRunStatus": "SUCCEEDED",
     "lifecycleStatus": "ACTIVE",
     "createdBy": "test-user",
-    "createdAt": datetime.datetime(2023, 1, 27, 7, 34, 41, tzinfo=tzutc()),
-    "startedAt": datetime.datetime(2023, 1, 27, 7, 37, 53, tzinfo=tzutc()),
-    "endedAt": datetime.datetime(2023, 1, 27, 7, 39, 17, tzinfo=tzutc()),
+    "createdAt": datetime.datetime(2023, 1, 27, 7, 34, 41),
+    "startedAt": datetime.datetime(2023, 1, 27, 7, 37, 53),
+    "endedAt": datetime.datetime(2023, 1, 27, 7, 39, 17),
 }
 
 MOCK_JOB_FAILED = {
@@ -50,9 +48,9 @@ MOCK_JOB_FAILED = {
     "taskRunStatus": "FAILED",
     "lifecycleStatus": "ACTIVE",
     "createdBy": "test-user",
-    "createdAt": datetime.datetime(2023, 1, 27, 7, 34, 41, tzinfo=tzutc()),
-    "startedAt": datetime.datetime(2023, 1, 27, 7, 37, 53, tzinfo=tzutc()),
-    "endedAt": datetime.datetime(2023, 1, 27, 7, 39, 17, tzinfo=tzutc()),
+    "createdAt": datetime.datetime(2023, 1, 27, 7, 34, 41),
+    "startedAt": datetime.datetime(2023, 1, 27, 7, 37, 53),
+    "endedAt": datetime.datetime(2023, 1, 27, 7, 39, 17),
 }
 
 MOCK_STEPS = {
