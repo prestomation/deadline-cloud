@@ -830,7 +830,7 @@ def job_wait_for_completion(poll_interval, timeout, output, **args):
 @click.option("--job-id", help="The job to get logs for.")
 @click.option(
     "--session-id",
-    help="The session ID to get logs for. If not provided and job-id is specified, will use the only session if there's just one.",
+    help="The session ID to get logs for. If not provided and job-id is specified, will use the latest session based on endedAt time.",
 )
 @click.option("--limit", default=100, help="Maximum number of log lines to return.")
 @click.option(
@@ -855,8 +855,8 @@ def job_logs(session_id, limit, start_time, end_time, next_token, output, **args
     adjusted using the --limit parameter.
 
     If session-id is not provided but job-id is, the command will automatically
-    use the only session if there's just one, or return an error if multiple
-    sessions exist.
+    use the latest session based on endedAt time. If there's only one session,
+    it will use that one regardless of its endedAt time.
 
     Use --next-token with the value from a previous response to get the next page of results.
     """
@@ -873,18 +873,12 @@ def job_logs(session_id, limit, start_time, end_time, next_token, output, **args
     if not session_id and job_id:
         deadline = api.get_boto3_client("deadline", config=config)
         try:
-            response = deadline.list_sessions(farmId=farm_id, queueId=queue_id, jobId=job_id)
-            sessions = response.get("sessions", [])
-
-            # Handle pagination if there are more sessions
-            while "nextToken" in response:
-                response = deadline.list_sessions(
-                    farmId=farm_id,
-                    queueId=queue_id,
-                    jobId=job_id,
-                    nextToken=response["nextToken"],
-                )
-                sessions.extend(response.get("sessions", []))
+            # Use paginator to get all sessions
+            paginator = deadline.get_paginator('list_sessions')
+            sessions = []
+            
+            for page in paginator.paginate(farmId=farm_id, queueId=queue_id, jobId=job_id):
+                sessions.extend(page.get("sessions", []))
 
             if not sessions:
                 raise DeadlineOperationError(f"No sessions found for job {job_id}")
@@ -893,11 +887,16 @@ def job_logs(session_id, limit, start_time, end_time, next_token, output, **args
                 if not is_json_output:
                     click.echo(f"Using the only available session: {session_id}")
             else:
-                # Multiple sessions found, show error with list of sessions
-                session_list = "\n".join([f"  - {s['sessionId']}" for s in sessions])
-                raise DeadlineOperationError(
-                    f"Multiple sessions found for job {job_id}. Please specify one with --session-id:\n{session_list}"
+                # Multiple sessions found, select the latest one based on endedAt time
+                # Sort sessions by endedAt time (latest first)
+                # Sessions that haven't ended yet will have no endedAt, so use startedAt as fallback
+                latest_session = max(
+                    sessions,
+                    key=lambda s: s.get("endedAt", s.get("startedAt", datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)))
                 )
+                session_id = latest_session["sessionId"]
+                if not is_json_output:
+                    click.echo(f"Using the latest session: {session_id}")
         except ClientError as exc:
             raise DeadlineOperationError(
                 f"Failed to list sessions for job {job_id}:\n{exc}"
@@ -906,7 +905,7 @@ def job_logs(session_id, limit, start_time, end_time, next_token, output, **args
     # Ensure we have a session ID at this point
     if not session_id:
         raise DeadlineOperationError(
-            "Session ID is required. Provide it with --session-id or specify a --job-id with exactly one session."
+            "Session ID is required. Provide it with --session-id or specify a --job-id with at least one session."
         )
 
     if not is_json_output:

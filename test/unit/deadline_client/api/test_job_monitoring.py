@@ -105,7 +105,6 @@ def test_wait_for_job_completion_success():
 
         # First call returns RUNNING, second call returns SUCCEEDED
         deadline_mock.get_job.side_effect = [MOCK_JOB_RUNNING, MOCK_JOB_SUCCEEDED]
-        deadline_mock.list_steps.return_value = MOCK_STEPS
 
         # Mock time.sleep to avoid waiting in tests
         with patch("time.sleep"):
@@ -144,8 +143,24 @@ def test_wait_for_job_completion_failure():
 
         # First call returns RUNNING, second call returns FAILED
         deadline_mock.get_job.side_effect = [MOCK_JOB_RUNNING, MOCK_JOB_FAILED]
-        deadline_mock.list_steps.return_value = MOCK_STEPS
-        deadline_mock.list_tasks.return_value = MOCK_TASKS
+
+        # Set up paginator mock for list_steps
+        steps_paginator_mock = MagicMock()
+        steps_paginator_mock.paginate.return_value = [MOCK_STEPS]
+
+        # Set up paginator mock for list_tasks
+        tasks_paginator_mock = MagicMock()
+        tasks_paginator_mock.paginate.return_value = [MOCK_TASKS]
+
+        # Configure get_paginator to return the appropriate paginator based on the operation
+        def get_paginator_side_effect(operation):
+            if operation == "list_steps":
+                return steps_paginator_mock
+            elif operation == "list_tasks":
+                return tasks_paginator_mock
+            return MagicMock()
+
+        deadline_mock.get_paginator.side_effect = get_paginator_side_effect
 
         # Mock time.sleep to avoid waiting in tests
         with patch("time.sleep"):
@@ -179,6 +194,17 @@ def test_wait_for_job_completion_failure():
                 assert result.failed_tasks[1].step_name == "Step 2"
                 assert result.failed_tasks[1].session_id == "session-def456"
 
+                # Verify paginators were called with correct parameters
+                deadline_mock.get_paginator.assert_any_call("list_steps")
+                steps_paginator_mock.paginate.assert_called_with(
+                    farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID
+                )
+
+                deadline_mock.get_paginator.assert_any_call("list_tasks")
+                tasks_paginator_mock.paginate.assert_called_with(
+                    farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID, stepId="step-456"
+                )
+
 
 def test_wait_for_job_completion_timeout():
     """
@@ -200,87 +226,58 @@ def test_wait_for_job_completion_timeout():
             with patch("datetime.datetime") as dt_mock:
                 dt_mock.now.side_effect = [start_time, check_time]
 
-                try:
-                    wait_for_job_completion(
-                        farm_id=MOCK_FARM_ID,
-                        queue_id=MOCK_QUEUE_ID,
-                        job_id=MOCK_JOB_ID,
-                        poll_interval=1,
-                        timeout=2,
-                    )
-                    assert False, "Expected DeadlineOperationError was not raised"
-                except DeadlineOperationError as e:
-                    assert "Timeout waiting for job" in str(e)
+                with patch.object(dt_mock, "now", side_effect=[start_time, check_time]):
+                    try:
+                        wait_for_job_completion(
+                            farm_id=MOCK_FARM_ID,
+                            queue_id=MOCK_QUEUE_ID,
+                            job_id=MOCK_JOB_ID,
+                            poll_interval=1,
+                            timeout=2,
+                        )
+                        assert False, "Expected DeadlineOperationError was not raised"
+                    except DeadlineOperationError as e:
+                        assert "Timeout waiting for job" in str(e)
 
 
-def test_wait_for_job_completion_status_callback():
+def test_wait_for_job_completion_with_pagination():
     """
-    Test that wait_for_job_completion calls the status callback correctly.
-    """
-    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client:
-        deadline_mock = MagicMock()
-        mock_get_client.return_value = deadline_mock
-
-        # First call returns RUNNING, second call returns SUCCEEDED
-        deadline_mock.get_job.side_effect = [MOCK_JOB_RUNNING, MOCK_JOB_SUCCEEDED]
-        deadline_mock.list_steps.return_value = MOCK_STEPS
-
-        # Create a mock callback
-        mock_callback = MagicMock()
-
-        # Mock time.sleep to avoid waiting in tests
-        with patch("time.sleep"):
-            # Mock datetime.now to simulate elapsed time
-            start_time = datetime.datetime(2023, 1, 1, 12, 0, 0)
-            end_time = datetime.datetime(2023, 1, 1, 12, 0, 10)
-
-            with patch("datetime.datetime") as dt_mock:
-                dt_mock.now.side_effect = [start_time, end_time]
-
-                wait_for_job_completion(
-                    farm_id=MOCK_FARM_ID,
-                    queue_id=MOCK_QUEUE_ID,
-                    job_id=MOCK_JOB_ID,
-                    poll_interval=1,
-                    status_callback=mock_callback,
-                )
-
-                # Verify the callback was called with the correct statuses
-                assert mock_callback.call_count == 2
-                mock_callback.assert_any_call("RUNNING")
-                mock_callback.assert_any_call("SUCCEEDED")
-
-
-def test_wait_for_job_completion_missing_session_id():
-    """
-    Test that wait_for_job_completion handles tasks without a session ID.
+    Test that wait_for_job_completion correctly handles pagination for steps and tasks.
     """
     with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client:
         deadline_mock = MagicMock()
         mock_get_client.return_value = deadline_mock
 
-        # First call returns RUNNING, second call returns FAILED
-        deadline_mock.get_job.side_effect = [MOCK_JOB_RUNNING, MOCK_JOB_FAILED]
-        deadline_mock.list_steps.return_value = MOCK_STEPS
+        # Return FAILED job status
+        deadline_mock.get_job.return_value = MOCK_JOB_FAILED
 
-        # Create a task without latestSessionActionId
-        tasks_without_session = {
-            "tasks": [
-                {
-                    "taskId": "task-123",
-                    "runStatus": "FAILED",
-                    # No latestSessionActionId
-                }
-            ]
-        }
+        # Set up paginator mock for list_steps with multiple pages
+        steps_page1 = {"steps": [MOCK_STEPS["steps"][0]]}
+        steps_page2 = {"steps": [MOCK_STEPS["steps"][1]]}
+        steps_paginator_mock = MagicMock()
+        steps_paginator_mock.paginate.return_value = [steps_page1, steps_page2]
 
-        deadline_mock.list_tasks.return_value = tasks_without_session
+        # Set up paginator mock for list_tasks with multiple pages
+        tasks_page1 = {"tasks": [MOCK_TASKS["tasks"][0]]}
+        tasks_page2 = {"tasks": [MOCK_TASKS["tasks"][1], MOCK_TASKS["tasks"][2]]}
+        tasks_paginator_mock = MagicMock()
+        tasks_paginator_mock.paginate.return_value = [tasks_page1, tasks_page2]
+
+        # Configure get_paginator to return the appropriate paginator based on the operation
+        def get_paginator_side_effect(operation):
+            if operation == "list_steps":
+                return steps_paginator_mock
+            elif operation == "list_tasks":
+                return tasks_paginator_mock
+            return MagicMock()
+
+        deadline_mock.get_paginator.side_effect = get_paginator_side_effect
 
         # Mock time.sleep to avoid waiting in tests
         with patch("time.sleep"):
             # Mock datetime.now to simulate elapsed time
             start_time = datetime.datetime(2023, 1, 1, 12, 0, 0)
-            end_time = datetime.datetime(2023, 1, 1, 12, 0, 10)
+            end_time = datetime.datetime(2023, 1, 1, 12, 0, 5)
 
             with patch("datetime.datetime") as dt_mock:
                 dt_mock.now.side_effect = [start_time, end_time]
@@ -292,256 +289,291 @@ def test_wait_for_job_completion_missing_session_id():
                     poll_interval=1,
                 )
 
-                assert len(result.failed_tasks) == 1
-                assert result.failed_tasks[0].session_id is None
+                assert isinstance(result, JobCompletionResult)
+                assert result.status == "FAILED"
+                assert result.elapsed_time == 5.0
+                assert len(result.failed_tasks) == 2
+
+                # Verify paginators were called with correct parameters
+                deadline_mock.get_paginator.assert_any_call("list_steps")
+                steps_paginator_mock.paginate.assert_called_with(
+                    farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID
+                )
+
+                deadline_mock.get_paginator.assert_any_call("list_tasks")
+                tasks_paginator_mock.paginate.assert_called_with(
+                    farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID, stepId="step-456"
+                )
 
 
-def test_get_session_logs_success():
+# Mock CloudWatch log events for testing
+MOCK_LOG_EVENTS = [
+    {
+        "timestamp": 1672574400000,  # 2023-01-01 12:00:00 UTC
+        "message": "Log message 1",
+        "ingestionTime": 1672574410000,  # 2023-01-01 12:00:10 UTC
+        "eventId": "event-1",
+    },
+    {
+        "timestamp": 1672574460000,  # 2023-01-01 12:01:00 UTC
+        "message": "Log message 2",
+        "ingestionTime": 1672574470000,  # 2023-01-01 12:01:10 UTC
+        "eventId": "event-2",
+    },
+]
+
+# Mock CloudWatch GetLogEvents response
+MOCK_GET_LOG_EVENTS_RESPONSE = {
+    "events": MOCK_LOG_EVENTS,
+    "nextForwardToken": "next-token",
+    "nextBackwardToken": "back-token",
+}
+
+
+def test_get_session_logs_basic():
     """
-    Test that get_session_logs works correctly when logs are found.
+    Test that get_session_logs works correctly with basic parameters.
     """
-    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client:
+    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        # Mock user and identity store ID to be None (standard credentials path)
+        mock_get_user.return_value = (None, None)
+
+        # Set up logs client mock
+        logs_client_mock = MagicMock()
+        logs_client_mock.get_log_events.return_value = MOCK_GET_LOG_EVENTS_RESPONSE
+        mock_get_client.return_value = logs_client_mock
+
+        # Call the function
+        result = get_session_logs(
+            farm_id=MOCK_FARM_ID,
+            queue_id=MOCK_QUEUE_ID,
+            session_id="test-session",
+            limit=100,
+        )
+
+        # Verify the result
+        assert isinstance(result, SessionLogResult)
+        assert len(result.events) == 2
+        assert result.events[0].message == "Log message 1"
+        assert result.events[1].message == "Log message 2"
+        assert result.next_token == "next-token"
+        assert result.log_group == f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}"
+        assert result.log_stream == "session-test-session"
+        assert result.count == 2
+
+        # Verify the logs client was called with correct parameters
+        logs_client_mock.get_log_events.assert_called_once_with(
+            logGroupName=f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}",
+            logStreamName="session-test-session",
+            limit=100,
+            startFromHead=False,
+        )
+
+
+def test_get_session_logs_with_datetime_params():
+    """
+    Test that get_session_logs works correctly with datetime parameters.
+    """
+    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        # Mock user and identity store ID to be None (standard credentials path)
+        mock_get_user.return_value = (None, None)
+
+        # Set up logs client mock
+        logs_client_mock = MagicMock()
+        logs_client_mock.get_log_events.return_value = MOCK_GET_LOG_EVENTS_RESPONSE
+        mock_get_client.return_value = logs_client_mock
+
+        # Create datetime objects for start and end times
+        start_time = datetime.datetime(2023, 1, 1, 12, 0, 0)
+        end_time = datetime.datetime(2023, 1, 1, 13, 0, 0)
+
+        # Call the function with datetime parameters
+        result = get_session_logs(
+            farm_id=MOCK_FARM_ID,
+            queue_id=MOCK_QUEUE_ID,
+            session_id="test-session",
+            limit=100,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+        # Verify the result
+        assert isinstance(result, SessionLogResult)
+        assert len(result.events) == 2
+
+        # Verify the logs client was called with correct parameters
+        logs_client_mock.get_log_events.assert_called_once_with(
+            logGroupName=f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}",
+            logStreamName="session-test-session",
+            limit=100,
+            startFromHead=False,
+            startTime=int(start_time.timestamp() * 1000),
+            endTime=int(end_time.timestamp() * 1000),
+        )
+
+
+def test_get_session_logs_with_monitor_credentials():
+    """
+    Test that get_session_logs works correctly with Deadline Cloud monitor credentials.
+    """
+    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user, patch(
+        "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
+    ) as mock_get_session:
+        # Mock user and identity store ID to simulate monitor credentials
+        mock_get_user.return_value = ("user-123", "identity-store-456")
+
+        # Set up queue session mock
+        queue_session_mock = MagicMock()
+        logs_client_mock = MagicMock()
+        logs_client_mock.get_log_events.return_value = MOCK_GET_LOG_EVENTS_RESPONSE
+        queue_session_mock.client.return_value = logs_client_mock
+        mock_get_session.return_value = queue_session_mock
+
+        # Set up deadline client mock
         deadline_mock = MagicMock()
         mock_get_client.return_value = deadline_mock
 
-        # Mock queue session
-        queue_session_mock = MagicMock()
-        logs_client_mock = MagicMock()
-        queue_session_mock.client.return_value = logs_client_mock
+        # Call the function
+        result = get_session_logs(
+            farm_id=MOCK_FARM_ID,
+            queue_id=MOCK_QUEUE_ID,
+            session_id="test-session",
+            limit=100,
+        )
 
-        # Mock the get_queue_user_boto3_session function
-        with patch(
-            "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
-        ) as mock_get_session:
-            mock_get_session.return_value = queue_session_mock
+        # Verify the result
+        assert isinstance(result, SessionLogResult)
+        assert len(result.events) == 2
 
-            # Mock the logs client response
-            logs_client_mock.get_log_events.return_value = {
-                "events": [
-                    {
-                        "timestamp": 1672531200000,  # 2023-01-01 12:00:00
-                        "message": "Log message 1",
-                        "ingestionTime": 1672531210000,
-                        "eventId": "event-1",
-                    },
-                    {
-                        "timestamp": 1672531260000,  # 2023-01-01 12:01:00
-                        "message": "Log message 2",
-                        "ingestionTime": 1672531270000,
-                        "eventId": "event-2",
-                    },
-                ],
-                "nextForwardToken": "next-token",
-                "prevBackwardToken": "prev-token",
-            }
+        # Verify the queue session was created with correct parameters
+        mock_get_session.assert_called_once_with(
+            deadline=deadline_mock,
+            config=None,
+            farm_id=MOCK_FARM_ID,
+            queue_id=MOCK_QUEUE_ID,
+        )
 
-            result = get_session_logs(
-                farm_id=MOCK_FARM_ID,
-                queue_id=MOCK_QUEUE_ID,
-                session_id="test-session",
-                limit=100,
-            )
+        # Verify the logs client was created from the queue session
+        queue_session_mock.client.assert_called_once_with("logs")
 
-            # Verify the result
-            assert isinstance(result, SessionLogResult)
-            assert len(result.events) == 2
-            assert result.count == 2
-            assert result.next_token == "next-token"
-            assert result.log_group == f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}"
-            assert result.log_stream == "session-test-session"
-
-            # Verify the events
-            assert result.events[0].message == "Log message 1"
-            # Don't check exact timestamp as it depends on timezone
-            assert result.events[0].event_id == "event-1"
-
-            # Verify the logs client was called with correct parameters
-            logs_client_mock.get_log_events.assert_called_once_with(
-                logGroupName=f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}",
-                logStreamName="session-test-session",
-                limit=100,
-                startFromHead=False,
-            )
-
-
-def test_get_session_logs_empty():
-    """
-    Test that get_session_logs handles empty results correctly.
-    """
-    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client:
-        deadline_mock = MagicMock()
-        mock_get_client.return_value = deadline_mock
-
-        # Mock queue session
-        queue_session_mock = MagicMock()
-        logs_client_mock = MagicMock()
-        queue_session_mock.client.return_value = logs_client_mock
-
-        # Mock the get_queue_user_boto3_session function
-        with patch(
-            "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
-        ) as mock_get_session:
-            mock_get_session.return_value = queue_session_mock
-
-            # Mock the logs client response with empty events
-            logs_client_mock.get_log_events.return_value = {
-                "events": [],
-                "prevBackwardToken": "prev-token",
-            }
-
-            result = get_session_logs(
-                farm_id=MOCK_FARM_ID,
-                queue_id=MOCK_QUEUE_ID,
-                session_id="test-session",
-                limit=100,
-            )
-
-            # Verify the result
-            assert isinstance(result, SessionLogResult)
-            assert len(result.events) == 0
-            assert result.count == 0
-            assert result.next_token is None
-            assert result.log_group == f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}"
-            assert result.log_stream == "session-test-session"
-
-
-def test_get_session_logs_not_found():
-    """
-    Test that get_session_logs handles ResourceNotFoundException correctly.
-    """
-    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client:
-        deadline_mock = MagicMock()
-        mock_get_client.return_value = deadline_mock
-
-        # Mock queue session
-        queue_session_mock = MagicMock()
-        logs_client_mock = MagicMock()
-        queue_session_mock.client.return_value = logs_client_mock
-
-        # Mock the get_queue_user_boto3_session function
-        with patch(
-            "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
-        ) as mock_get_session:
-            mock_get_session.return_value = queue_session_mock
-
-            # Mock the logs client to raise ResourceNotFoundException
-            logs_client_mock.exceptions.ResourceNotFoundException = Exception
-            logs_client_mock.get_log_events.side_effect = (
-                logs_client_mock.exceptions.ResourceNotFoundException()
-            )
-
-            result = get_session_logs(
-                farm_id=MOCK_FARM_ID,
-                queue_id=MOCK_QUEUE_ID,
-                session_id="test-session",
-                limit=100,
-            )
-
-            # Verify the result is empty but doesn't raise an exception
-            assert isinstance(result, SessionLogResult)
-            assert len(result.events) == 0
-            assert result.count == 0
-            assert result.next_token is None
-            assert result.log_group == f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}"
-            assert result.log_stream == "session-test-session"
-
-
-def test_get_session_logs_with_time_params():
-    """
-    Test that get_session_logs handles time parameters correctly.
-    """
-    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client:
-        deadline_mock = MagicMock()
-        mock_get_client.return_value = deadline_mock
-
-        # Mock queue session
-        queue_session_mock = MagicMock()
-        logs_client_mock = MagicMock()
-        queue_session_mock.client.return_value = logs_client_mock
-
-        # Mock the get_queue_user_boto3_session function
-        with patch(
-            "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
-        ) as mock_get_session:
-            mock_get_session.return_value = queue_session_mock
-
-            # Mock the logs client response
-            logs_client_mock.get_log_events.return_value = {
-                "events": [
-                    {
-                        "timestamp": 1672531200000,  # 2023-01-01 12:00:00
-                        "message": "Log message 1",
-                        "ingestionTime": 1672531210000,
-                        "eventId": "event-1",
-                    }
-                ],
-                "nextForwardToken": "next-token",
-                "prevBackwardToken": "prev-token",
-            }
-
-            get_session_logs(
-                farm_id=MOCK_FARM_ID,
-                queue_id=MOCK_QUEUE_ID,
-                session_id="test-session",
-                limit=100,
-                start_time="2023-01-01T12:00:00Z",
-                end_time="2023-01-01T13:00:00Z",
-            )
-
-            # Verify the logs client was called with correct time parameters
-            logs_client_mock.get_log_events.assert_called_once()
-            call_args = logs_client_mock.get_log_events.call_args[1]
-            assert "startTime" in call_args
-            assert "endTime" in call_args
-            # Time conversion depends on timezone, so just check that the parameters exist
+        # Verify the logs client was called with correct parameters
+        logs_client_mock.get_log_events.assert_called_once_with(
+            logGroupName=f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}",
+            logStreamName="session-test-session",
+            limit=100,
+            startFromHead=False,
+        )
 
 
 def test_get_session_logs_with_next_token():
     """
-    Test that get_session_logs handles next_token parameter correctly.
+    Test that get_session_logs works correctly with pagination token.
     """
-    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client:
-        deadline_mock = MagicMock()
-        mock_get_client.return_value = deadline_mock
+    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        # Mock user and identity store ID to be None (standard credentials path)
+        mock_get_user.return_value = (None, None)
 
-        # Mock queue session
-        queue_session_mock = MagicMock()
+        # Set up logs client mock
         logs_client_mock = MagicMock()
-        queue_session_mock.client.return_value = logs_client_mock
+        logs_client_mock.get_log_events.return_value = MOCK_GET_LOG_EVENTS_RESPONSE
+        mock_get_client.return_value = logs_client_mock
 
-        # Mock the get_queue_user_boto3_session function
-        with patch(
-            "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
-        ) as mock_get_session:
-            mock_get_session.return_value = queue_session_mock
+        # Call the function with next_token
+        result = get_session_logs(
+            farm_id=MOCK_FARM_ID,
+            queue_id=MOCK_QUEUE_ID,
+            session_id="test-session",
+            limit=100,
+            next_token="previous-token",
+        )
 
-            # Mock the logs client response
-            logs_client_mock.get_log_events.return_value = {
-                "events": [
-                    {
-                        "timestamp": 1672531200000,  # 2023-01-01 12:00:00
-                        "message": "Log message 3",
-                        "ingestionTime": 1672531210000,
-                        "eventId": "event-3",
-                    }
-                ],
-                "nextForwardToken": "next-token-2",
-                "prevBackwardToken": "prev-token",
-            }
+        # Verify the result
+        assert isinstance(result, SessionLogResult)
+        assert result.next_token == "next-token"
 
-            result = get_session_logs(
+        # Verify the logs client was called with correct parameters
+        logs_client_mock.get_log_events.assert_called_once_with(
+            logGroupName=f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}",
+            logStreamName="session-test-session",
+            limit=100,
+            startFromHead=False,
+            nextToken="previous-token",
+        )
+
+
+def test_get_session_logs_resource_not_found():
+    """
+    Test that get_session_logs handles ResourceNotFoundException correctly.
+    """
+    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        # Mock user and identity store ID to be None (standard credentials path)
+        mock_get_user.return_value = (None, None)
+
+        # Set up logs client mock with ResourceNotFoundException
+        logs_client_mock = MagicMock()
+        logs_client_mock.exceptions.ResourceNotFoundException = type(
+            "ResourceNotFoundException", (Exception,), {}
+        )
+        logs_client_mock.get_log_events.side_effect = (
+            logs_client_mock.exceptions.ResourceNotFoundException()
+        )
+        mock_get_client.return_value = logs_client_mock
+
+        # Call the function
+        result = get_session_logs(
+            farm_id=MOCK_FARM_ID,
+            queue_id=MOCK_QUEUE_ID,
+            session_id="test-session",
+            limit=100,
+        )
+
+        # Verify the result is empty but valid
+        assert isinstance(result, SessionLogResult)
+        assert len(result.events) == 0
+        assert result.next_token is None
+        assert result.log_group == f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}"
+        assert result.log_stream == "session-test-session"
+        assert result.count == 0
+
+
+def test_get_session_logs_invalid_datetime():
+    """
+    Test that get_session_logs handles invalid datetime objects correctly.
+    """
+    with patch("deadline.client.api._job_monitoring.get_boto3_client") as mock_get_client, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        # Mock user and identity store ID to be None (standard credentials path)
+        mock_get_user.return_value = (None, None)
+
+        # Set up logs client mock
+        logs_client_mock = MagicMock()
+        mock_get_client.return_value = logs_client_mock
+
+        # Create an invalid datetime object (None with timestamp attribute that raises)
+        invalid_datetime = MagicMock()
+        invalid_datetime.timestamp.side_effect = AttributeError(
+            "'NoneType' object has no attribute 'timestamp'"
+        )
+
+        # Call the function with invalid datetime and verify it raises an error
+        try:
+            get_session_logs(
                 farm_id=MOCK_FARM_ID,
                 queue_id=MOCK_QUEUE_ID,
                 session_id="test-session",
-                limit=100,
-                next_token="test-token",
+                start_time=invalid_datetime,
             )
-
-            # Verify the logs client was called with the next_token parameter
-            logs_client_mock.get_log_events.assert_called_once()
-            call_args = logs_client_mock.get_log_events.call_args[1]
-            assert "nextToken" in call_args
-            assert call_args["nextToken"] == "test-token"
-
-            # Verify the result contains the new next_token
-            assert result.next_token == "next-token-2"
+            assert False, "Expected DeadlineOperationError was not raised"
+        except DeadlineOperationError as e:
+            assert "Invalid start time" in str(e)

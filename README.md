@@ -216,7 +216,7 @@ You can monitor job status and retrieve logs using the CLI:
 # Get logs for a specific session
 $ deadline job logs --session-id session-12345
 
-# Get logs for a job (automatically uses the only session if there's just one)
+# Get logs for a job (automatically uses the latest session based on endedAt time if multiple sessions exist)
 $ deadline job logs --job-id job-12345
 
 # Limit the number of log lines returned

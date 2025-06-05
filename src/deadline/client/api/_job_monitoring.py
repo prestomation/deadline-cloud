@@ -86,10 +86,6 @@ def wait_for_job_completion(
     (SUCCEEDED, FAILED, CANCELED, ARCHIVED, or NOT_COMPATIBLE), then returns a JobCompletionResult
     object containing the final status and any failed tasks.
 
-    When using a Deadline Cloud monitor profile, this function will use the Queue role
-    credentials to read logs. Otherwise, the chosen profile credentials are used for all
-    API invocations.
-
     Args:
         farm_id: The ID of the farm containing the job.
         queue_id: The ID of the queue containing the job.
@@ -143,43 +139,43 @@ def wait_for_job_completion(
     failed_tasks = []
     if status != "SUCCEEDED":
         try:
-            # Get all steps
-            response = deadline.list_steps(farmId=farm_id, queueId=queue_id, jobId=job_id)
-            steps = response.get("steps", [])
+            # Get all steps with pagination
+            paginator = deadline.get_paginator("list_steps")
+            for page in paginator.paginate(farmId=farm_id, queueId=queue_id, jobId=job_id):
+                # For each step, get tasks and filter for failed ones client-side
+                for step in page["steps"]:
+                    step_id = step["stepId"]
+                    step_name = step.get("name", "")
 
-            # For each step, get tasks and filter for failed ones client-side
-            for step in steps:
-                step_id = step["stepId"]
-                step_name = step.get("name", "")
+                    # Only query for tasks if the step has any failed tasks
+                    if step.get("taskRunStatusCounts", {}).get("FAILED", 0) > 0:
+                        # Get all tasks with pagination
+                        task_paginator = deadline.get_paginator("list_tasks")
+                        for tasks_page in task_paginator.paginate(
+                            farmId=farm_id, queueId=queue_id, jobId=job_id, stepId=step_id
+                        ):
+                            # Filter failed tasks client-side
+                            for task in tasks_page["tasks"]:
+                                if task.get("runStatus") == "FAILED":
+                                    # Get the session ID that processed this task
+                                    session_id = None
+                                    latest_session_action_id = task.get("latestSessionActionId")
 
-                # Only query for tasks if the step has any failed tasks
-                if step.get("taskRunStatusCounts", {}).get("FAILED", 0) > 0:
-                    response = deadline.list_tasks(
-                        farmId=farm_id, queueId=queue_id, jobId=job_id, stepId=step_id
-                    )
+                                    if latest_session_action_id:
+                                        # Extract the session ID from the session action ID (format: sessionaction-{sessionId}-{index})
+                                        parts = latest_session_action_id.split("-")
+                                        if len(parts) >= 3 and parts[0] == "sessionaction":
+                                            session_id = f"session-{parts[1]}"
 
-                    # Filter failed tasks client-side
-                    for task in response.get("tasks", []):
-                        if task.get("runStatus") == "FAILED":
-                            # Get the session ID that processed this task
-                            session_id = None
-                            latest_session_action_id = task.get("latestSessionActionId")
-
-                            if latest_session_action_id:
-                                # Extract the session ID from the session action ID (format: sessionaction-{sessionId}-{index})
-                                parts = latest_session_action_id.split("-")
-                                if len(parts) >= 3 and parts[0] == "sessionaction":
-                                    session_id = f"session-{parts[1]}"
-
-                            failed_tasks.append(
-                                FailedTask(
-                                    step_id=step_id,
-                                    task_id=task["taskId"],
-                                    step_name=step_name,
-                                    parameters=task.get("parameters", {}),
-                                    session_id=session_id,
-                                )
-                            )
+                                    failed_tasks.append(
+                                        FailedTask(
+                                            step_id=step_id,
+                                            task_id=task["taskId"],
+                                            step_name=step_name,
+                                            parameters=task.get("parameters", {}),
+                                            session_id=session_id,
+                                        )
+                                    )
         except ClientError as exc:
             raise DeadlineOperationError(f"Failed to retrieve failed tasks: {exc}") from exc
 
@@ -191,8 +187,8 @@ def get_session_logs(
     queue_id: str,
     session_id: str,
     limit: int = 100,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
+    start_time: Optional[datetime.datetime] = None,
+    end_time: Optional[datetime.datetime] = None,
     next_token: Optional[str] = None,
     config: Optional[ConfigParser] = None,
 ) -> SessionLogResult:
@@ -208,8 +204,8 @@ def get_session_logs(
         queue_id: The ID of the queue containing the session.
         session_id: The ID of the session to get logs for.
         limit: Maximum number of log lines to return.
-        start_time: Optional start time for logs in ISO format (e.g., 2023-01-01T12:00:00Z).
-        end_time: Optional end time for logs in ISO format (e.g., 2023-01-01T13:00:00Z).
+        start_time: Optional start time for logs as a datetime object.
+        end_time: Optional end time for logs as a datetime object.
         next_token: Optional token for pagination of results.
         config: Optional configuration object.
 
@@ -261,31 +257,21 @@ def get_session_logs(
     # Add optional time parameters if provided
     if start_time:
         try:
-            # Convert ISO format to milliseconds since epoch
-            start_timestamp = int(
-                datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00")).timestamp()
-                * 1000
-            )
+            # Convert datetime to milliseconds since epoch
+            start_timestamp = int(start_time.timestamp() * 1000)
             params["startTime"] = start_timestamp
-        except ValueError:
-            raise DeadlineOperationError(
-                f"Invalid start time format: {start_time}. Use ISO format (e.g., 2023-01-01T12:00:00Z)"
-            )
+        except (ValueError, AttributeError) as e:
+            raise DeadlineOperationError(f"Invalid start time: {e}")
 
     if end_time:
         try:
-            # Convert ISO format to milliseconds since epoch
-            end_timestamp = int(
-                datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00")).timestamp() * 1000
-            )
+            # Convert datetime to milliseconds since epoch
+            end_timestamp = int(end_time.timestamp() * 1000)
             params["endTime"] = end_timestamp
-        except ValueError:
-            raise DeadlineOperationError(
-                f"Invalid end time format: {end_time}. Use ISO format (e.g., 2023-01-01T13:00:00Z)"
-            )
+        except (ValueError, AttributeError) as e:
+            raise DeadlineOperationError(f"Invalid end time: {e}")
 
     try:
-        # Get log events
         response = logs_client.get_log_events(**params)
 
         # Convert to strongly typed objects
