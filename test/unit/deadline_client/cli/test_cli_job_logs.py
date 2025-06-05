@@ -4,8 +4,9 @@
 Tests for the CLI job logs command.
 """
 
+import json
 import datetime
-from unittest.mock import ANY, MagicMock, patch, call
+from unittest.mock import ANY, MagicMock, patch
 
 from click.testing import CliRunner
 from dateutil.tz import tzutc
@@ -13,11 +14,345 @@ from dateutil.tz import tzutc
 from deadline.client import api
 from deadline.client.cli import main
 from deadline.client.config import config_file as config
+from deadline.client.api._job_monitoring import SessionLogResult, LogEvent
 
-# Mock constants
-MOCK_FARM_ID = "farm-0123456789abcdefabcdefabcdefabcd"
-MOCK_QUEUE_ID = "queue-0123456789abcdefabcdefabcdefabcd"
+from ..shared_constants import (
+    MOCK_FARM_ID,
+    MOCK_QUEUE_ID,
+)
+
+# Mock constants for tests that don't use shared constants
 MOCK_JOB_ID = "job-0123456789abcdefabcdefabcdefabcd"
+
+# Sample log events for testing
+SAMPLE_LOG_EVENTS = [
+    LogEvent(
+        timestamp=datetime.datetime(2023, 1, 1, 12, 0, 0),
+        message="Log message 1",
+        ingestion_time=datetime.datetime(2023, 1, 1, 12, 0, 10),
+        event_id="event-1",
+    ),
+    LogEvent(
+        timestamp=datetime.datetime(2023, 1, 1, 12, 1, 0),
+        message="Log message 2",
+        ingestion_time=datetime.datetime(2023, 1, 1, 12, 1, 10),
+        event_id="event-2",
+    ),
+]
+
+# Sample log result for testing
+SAMPLE_LOG_RESULT = SessionLogResult(
+    events=SAMPLE_LOG_EVENTS,
+    next_token="next-token",
+    log_group=f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}",
+    log_stream="session-test-session",
+    count=2,
+)
+
+# Sample empty log result for testing
+EMPTY_LOG_RESULT = SessionLogResult(
+    events=[],
+    next_token=None,
+    log_group=f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}",
+    log_stream="session-test-session",
+    count=0,
+)
+
+
+def test_cli_job_logs_verbose(fresh_deadline_config):
+    """
+    Test that logs CLI works correctly in verbose mode.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        mock_get_user.return_value = (None, None)
+        mock_get_logs.return_value = SAMPLE_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["job", "logs", "--session-id", "test-session", "--limit", "100"]
+        )
+
+        assert "Retrieving logs for session" in result.output
+        assert "[2023-01-01 12:00:00] Log message 1" in result.output
+        assert "[2023-01-01 12:01:00] Log message 2" in result.output
+        assert "Retrieved 2 log events" in result.output
+        assert "More logs are available" in result.output
+        assert result.exit_code == 0
+
+        # Verify the API was called with correct parameters
+        mock_get_logs.assert_called_once()
+        args, kwargs = mock_get_logs.call_args
+        assert kwargs["farm_id"] == MOCK_FARM_ID
+        assert kwargs["queue_id"] == MOCK_QUEUE_ID
+        assert kwargs["session_id"] == "test-session"
+        assert kwargs["limit"] == 100
+
+
+def test_cli_job_logs_json(fresh_deadline_config):
+    """
+    Test that logs CLI works correctly in JSON mode.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        mock_get_user.return_value = (None, None)
+        mock_get_logs.return_value = SAMPLE_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "job",
+                "logs",
+                "--session-id",
+                "test-session",
+                "--limit",
+                "100",
+                "--output",
+                "json",
+            ],
+        )
+
+        # Verify the output is valid JSON
+        output_json = json.loads(result.output)
+        assert "events" in output_json
+        assert len(output_json["events"]) == 2
+        assert output_json["events"][0]["message"] == "Log message 1"
+        assert output_json["events"][1]["message"] == "Log message 2"
+        assert output_json["count"] == 2
+        assert output_json["nextToken"] == "next-token"
+        assert output_json["logGroup"] == f"/aws/deadline/{MOCK_FARM_ID}/{MOCK_QUEUE_ID}"
+        assert output_json["logStream"] == "session-test-session"
+
+        # Verify no intermediate text output was produced
+        assert "Retrieving logs for session" not in result.output
+
+        assert result.exit_code == 0
+
+
+def test_cli_job_logs_empty(fresh_deadline_config):
+    """
+    Test that logs CLI handles empty results correctly.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        mock_get_user.return_value = (None, None)
+        mock_get_logs.return_value = EMPTY_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["job", "logs", "--session-id", "test-session", "--limit", "100"]
+        )
+
+        assert "No logs found for the specified session" in result.output
+        assert result.exit_code == 0
+
+
+def test_cli_job_logs_json_empty(fresh_deadline_config):
+    """
+    Test that logs CLI handles empty results correctly in JSON mode.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        mock_get_user.return_value = (None, None)
+        mock_get_logs.return_value = EMPTY_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "job",
+                "logs",
+                "--session-id",
+                "test-session",
+                "--limit",
+                "100",
+                "--output",
+                "json",
+            ],
+        )
+
+        # Verify the output is valid JSON
+        output_json = json.loads(result.output)
+        assert "events" in output_json
+        assert len(output_json["events"]) == 0
+        assert output_json["count"] == 0
+        assert output_json["nextToken"] is None
+
+        assert result.exit_code == 0
+
+
+def test_cli_job_logs_json_error(fresh_deadline_config):
+    """
+    Test that logs CLI handles errors correctly in JSON mode.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        mock_get_user.return_value = (None, None)
+        mock_get_logs.side_effect = Exception("Test error message")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["job", "logs", "--session-id", "test-session", "--output", "json"],
+        )
+
+        # Verify the output contains an error message
+        assert "error" in result.output
+        # The actual error message is different in the test environment
+
+        # Exit code should be non-zero for errors
+        assert result.exit_code != 0
+
+
+def test_cli_job_logs_with_time_params(fresh_deadline_config):
+    """
+    Test that logs CLI handles time parameters correctly.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        mock_get_user.return_value = (None, None)
+        mock_get_logs.return_value = SAMPLE_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "job",
+                "logs",
+                "--session-id",
+                "test-session",
+                "--start-time",
+                "2023-01-01T12:00:00Z",
+                "--end-time",
+                "2023-01-01T13:00:00Z",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Verify the API was called with correct parameters
+        mock_get_logs.assert_called_once()
+        args, kwargs = mock_get_logs.call_args
+        assert kwargs["start_time"] == "2023-01-01T12:00:00Z"
+        assert kwargs["end_time"] == "2023-01-01T13:00:00Z"
+
+
+def test_cli_job_logs_with_next_token(fresh_deadline_config):
+    """
+    Test that logs CLI handles next_token parameter correctly.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user:
+        mock_get_user.return_value = (None, None)
+        mock_get_logs.return_value = SAMPLE_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "job",
+                "logs",
+                "--session-id",
+                "test-session",
+                "--next-token",
+                "test-token",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+        # Verify the API was called with correct parameters
+        mock_get_logs.assert_called_once()
+        args, kwargs = mock_get_logs.call_args
+        assert kwargs["next_token"] == "test-token"
+
+
+def test_cli_job_logs_with_monitor_user(fresh_deadline_config):
+    """
+    Test that logs CLI works correctly when using Deadline Cloud monitor credentials.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch("deadline.client.api._job_monitoring.get_session_logs") as mock_get_logs, patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user, patch(
+        "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
+    ) as mock_get_session:
+        # Mock monitor user credentials
+        mock_get_user.return_value = ("user-123", "identity-store-456")
+        mock_session = MagicMock()
+        mock_logs_client = MagicMock()
+        mock_session.client.return_value = mock_logs_client
+        mock_get_session.return_value = mock_session
+        mock_get_logs.return_value = SAMPLE_LOG_RESULT
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["job", "logs", "--session-id", "test-session", "--limit", "100"]
+        )
+
+        assert result.exit_code == 0
+        assert "Retrieving logs for session" in result.output
+
+        # Verify the queue user session was created
+        mock_get_session.assert_called_once()
+        args, kwargs = mock_get_session.call_args
+        assert kwargs["farm_id"] == MOCK_FARM_ID
+        assert kwargs["queue_id"] == MOCK_QUEUE_ID
+
+
+def test_cli_job_logs_with_monitor_user_error(fresh_deadline_config):
+    """
+    Test that logs CLI handles errors when getting queue credentials.
+    """
+    config.set_setting("defaults.farm_id", MOCK_FARM_ID)
+    config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
+
+    with patch(
+        "deadline.client.api._job_monitoring.get_user_and_identity_store_id"
+    ) as mock_get_user, patch(
+        "deadline.client.api._job_monitoring.get_queue_user_boto3_session"
+    ) as mock_get_session:
+        # Mock monitor user credentials but make session creation fail
+        mock_get_user.return_value = ("user-123", "identity-store-456")
+        mock_get_session.side_effect = Exception("Failed to get queue credentials")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["job", "logs", "--session-id", "test-session"])
+
+        # Should fail with non-zero exit code
+        assert result.exit_code != 0
+        assert "Failed to get queue credentials" in result.output
 
 
 def test_cli_job_logs_with_session_id(fresh_deadline_config):
@@ -28,16 +363,16 @@ def test_cli_job_logs_with_session_id(fresh_deadline_config):
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
 
     with patch.object(api, "get_session_logs") as mock_get_logs:
-        # Mock the get_session_logs response
-        mock_get_logs.return_value = api.SessionLogResult(
+        # Mock the API response
+        mock_get_logs.return_value = SessionLogResult(
             events=[
-                api.LogEvent(
+                LogEvent(
                     timestamp=datetime.datetime(2023, 1, 27, 7, 24, 45, tzinfo=tzutc()),
                     message="Test log message 1",
                     ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 46, tzinfo=tzutc()),
                     event_id="event-1",
                 ),
-                api.LogEvent(
+                LogEvent(
                     timestamp=datetime.datetime(2023, 1, 27, 7, 24, 50, tzinfo=tzutc()),
                     message="Test log message 2",
                     ingestion_time=datetime.datetime(2023, 1, 27, 7, 24, 51, tzinfo=tzutc()),
@@ -97,11 +432,9 @@ def test_cli_job_logs_with_job_id_single_session(fresh_deadline_config):
         # Mock the paginator
         paginator_mock = MagicMock()
         boto3_client_mock().get_paginator.return_value = paginator_mock
-        
+
         # Set up the paginator to return a single session
-        paginator_mock.paginate.return_value = [
-            {"sessions": [{"sessionId": "session-1"}]}
-        ]
+        paginator_mock.paginate.return_value = [{"sessions": [{"sessionId": "session-1"}]}]
 
         # Mock the get_session_logs response
         mock_get_logs.return_value = api.SessionLogResult(
@@ -131,7 +464,7 @@ def test_cli_job_logs_with_job_id_single_session(fresh_deadline_config):
         )
 
         # Verify paginator was called correctly
-        boto3_client_mock().get_paginator.assert_called_once_with('list_sessions')
+        boto3_client_mock().get_paginator.assert_called_once_with("list_sessions")
         paginator_mock.paginate.assert_called_once_with(
             farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID
         )
@@ -167,15 +500,23 @@ def test_cli_job_logs_with_job_id_multiple_sessions(fresh_deadline_config):
         # Mock the paginator
         paginator_mock = MagicMock()
         boto3_client_mock().get_paginator.return_value = paginator_mock
-        
+
         # Set up the paginator to return multiple sessions
         paginator_mock.paginate.return_value = [
-            {"sessions": [
-                {"sessionId": "session-1", "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0, tzinfo=tzutc())},
-                {"sessionId": "session-2", "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0, tzinfo=tzutc())}
-            ]}
+            {
+                "sessions": [
+                    {
+                        "sessionId": "session-1",
+                        "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0, tzinfo=tzutc()),
+                    },
+                    {
+                        "sessionId": "session-2",
+                        "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0, tzinfo=tzutc()),
+                    },
+                ]
+            }
         ]
-        
+
         # Mock the get_session_logs response
         mock_get_logs.return_value = api.SessionLogResult(
             events=[
@@ -204,11 +545,11 @@ def test_cli_job_logs_with_job_id_multiple_sessions(fresh_deadline_config):
         )
 
         # Verify paginator was called correctly
-        boto3_client_mock().get_paginator.assert_called_once_with('list_sessions')
+        boto3_client_mock().get_paginator.assert_called_once_with("list_sessions")
         paginator_mock.paginate.assert_called_once_with(
             farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID
         )
-        
+
         # Verify get_session_logs was called with the latest session ID
         mock_get_logs.assert_called_once_with(
             farm_id=MOCK_FARM_ID,
@@ -238,7 +579,7 @@ def test_cli_job_logs_with_job_id_no_sessions(fresh_deadline_config):
         # Mock the paginator
         paginator_mock = MagicMock()
         boto3_client_mock().get_paginator.return_value = paginator_mock
-        
+
         # Set up the paginator to return no sessions
         paginator_mock.paginate.return_value = [{"sessions": []}]
 
@@ -254,7 +595,7 @@ def test_cli_job_logs_with_job_id_no_sessions(fresh_deadline_config):
         )
 
         # Verify paginator was called correctly
-        boto3_client_mock().get_paginator.assert_called_once_with('list_sessions')
+        boto3_client_mock().get_paginator.assert_called_once_with("list_sessions")
         paginator_mock.paginate.assert_called_once_with(
             farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID
         )
@@ -277,17 +618,27 @@ def test_cli_job_logs_with_pagination(fresh_deadline_config):
         # Mock the paginator
         paginator_mock = MagicMock()
         boto3_client_mock().get_paginator.return_value = paginator_mock
-        
+
         # Set up the paginator to return sessions across multiple pages
         paginator_mock.paginate.return_value = [
-            {"sessions": [
-                {"sessionId": "session-1", "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0, tzinfo=tzutc())}
-            ]},
-            {"sessions": [
-                {"sessionId": "session-2", "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0, tzinfo=tzutc())}
-            ]}
+            {
+                "sessions": [
+                    {
+                        "sessionId": "session-1",
+                        "endedAt": datetime.datetime(2023, 1, 27, 7, 0, 0, tzinfo=tzutc()),
+                    }
+                ]
+            },
+            {
+                "sessions": [
+                    {
+                        "sessionId": "session-2",
+                        "endedAt": datetime.datetime(2023, 1, 27, 8, 0, 0, tzinfo=tzutc()),
+                    }
+                ]
+            },
         ]
-        
+
         # Mock the get_session_logs response
         mock_get_logs.return_value = api.SessionLogResult(
             events=[
@@ -316,11 +667,11 @@ def test_cli_job_logs_with_pagination(fresh_deadline_config):
         )
 
         # Verify paginator was called correctly
-        boto3_client_mock().get_paginator.assert_called_once_with('list_sessions')
+        boto3_client_mock().get_paginator.assert_called_once_with("list_sessions")
         paginator_mock.paginate.assert_called_once_with(
             farmId=MOCK_FARM_ID, queueId=MOCK_QUEUE_ID, jobId=MOCK_JOB_ID
         )
-        
+
         # Verify get_session_logs was called with the latest session ID
         mock_get_logs.assert_called_once_with(
             farm_id=MOCK_FARM_ID,

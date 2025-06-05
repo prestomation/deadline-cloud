@@ -206,7 +206,7 @@ $ deadline job wait --job-id job-12345 --timeout 3600
 $ deadline job wait --job-id job-12345 --output json
 ```
 
-The command blocks until the job reaches a terminal state (SUCCEEDED, FAILED, CANCELED, or NOT_COMPATIBLE), then returns information about the job's status and any failed tasks. When using a Deadline Cloud monitor profile, this command will use the Queue role credentials to access job information.
+The command blocks until the job reaches a terminal state (SUCCEEDED, FAILED, CANCELED, or NOT_COMPATIBLE), then returns information about the job's status and any failed tasks. 
 
 ### Retrieving Job Logs
 

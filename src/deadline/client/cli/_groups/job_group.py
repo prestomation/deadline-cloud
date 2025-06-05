@@ -874,9 +874,9 @@ def job_logs(session_id, limit, start_time, end_time, next_token, output, **args
         deadline = api.get_boto3_client("deadline", config=config)
         try:
             # Use paginator to get all sessions
-            paginator = deadline.get_paginator('list_sessions')
+            paginator = deadline.get_paginator("list_sessions")
             sessions = []
-            
+
             for page in paginator.paginate(farmId=farm_id, queueId=queue_id, jobId=job_id):
                 sessions.extend(page.get("sessions", []))
 
@@ -892,7 +892,12 @@ def job_logs(session_id, limit, start_time, end_time, next_token, output, **args
                 # Sessions that haven't ended yet will have no endedAt, so use startedAt as fallback
                 latest_session = max(
                     sessions,
-                    key=lambda s: s.get("endedAt", s.get("startedAt", datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)))
+                    key=lambda s: s.get(
+                        "endedAt",
+                        s.get(
+                            "startedAt", datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+                        ),
+                    ),
                 )
                 session_id = latest_session["sessionId"]
                 if not is_json_output:
