@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 """
-Tests for the CLI job get-logs command.
+Tests for the CLI job logs command.
 """
 
 import json
@@ -54,9 +54,9 @@ EMPTY_LOG_RESULT = SessionLogResult(
 )
 
 
-def test_cli_job_get_logs_verbose(fresh_deadline_config):
+def test_cli_job_logs_verbose(fresh_deadline_config):
     """
-    Test that get-logs CLI works correctly in verbose mode.
+    Test that logs CLI works correctly in verbose mode.
     """
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
@@ -66,7 +66,7 @@ def test_cli_job_get_logs_verbose(fresh_deadline_config):
 
         runner = CliRunner()
         result = runner.invoke(
-            main, ["job", "get-logs", "--session-id", "test-session", "--limit", "100"]
+            main, ["job", "logs", "--session-id", "test-session", "--limit", "100"]
         )
 
         assert "Retrieving logs for session" in result.output
@@ -85,9 +85,9 @@ def test_cli_job_get_logs_verbose(fresh_deadline_config):
         assert kwargs["limit"] == 100
 
 
-def test_cli_job_get_logs_json(fresh_deadline_config):
+def test_cli_job_logs_json(fresh_deadline_config):
     """
-    Test that get-logs CLI works correctly in JSON mode.
+    Test that logs CLI works correctly in JSON mode.
     """
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
@@ -100,7 +100,7 @@ def test_cli_job_get_logs_json(fresh_deadline_config):
             main,
             [
                 "job",
-                "get-logs",
+                "logs",
                 "--session-id",
                 "test-session",
                 "--limit",
@@ -127,9 +127,9 @@ def test_cli_job_get_logs_json(fresh_deadline_config):
         assert result.exit_code == 0
 
 
-def test_cli_job_get_logs_empty(fresh_deadline_config):
+def test_cli_job_logs_empty(fresh_deadline_config):
     """
-    Test that get-logs CLI handles empty results correctly.
+    Test that logs CLI handles empty results correctly.
     """
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
@@ -139,16 +139,16 @@ def test_cli_job_get_logs_empty(fresh_deadline_config):
 
         runner = CliRunner()
         result = runner.invoke(
-            main, ["job", "get-logs", "--session-id", "test-session", "--limit", "100"]
+            main, ["job", "logs", "--session-id", "test-session", "--limit", "100"]
         )
 
         assert "No logs found for the specified session" in result.output
         assert result.exit_code == 0
 
 
-def test_cli_job_get_logs_json_empty(fresh_deadline_config):
+def test_cli_job_logs_json_empty(fresh_deadline_config):
     """
-    Test that get-logs CLI handles empty results correctly in JSON mode.
+    Test that logs CLI handles empty results correctly in JSON mode.
     """
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
@@ -161,7 +161,7 @@ def test_cli_job_get_logs_json_empty(fresh_deadline_config):
             main,
             [
                 "job",
-                "get-logs",
+                "logs",
                 "--session-id",
                 "test-session",
                 "--limit",
@@ -181,9 +181,9 @@ def test_cli_job_get_logs_json_empty(fresh_deadline_config):
         assert result.exit_code == 0
 
 
-def test_cli_job_get_logs_json_error(fresh_deadline_config):
+def test_cli_job_logs_json_error(fresh_deadline_config):
     """
-    Test that get-logs CLI handles errors correctly in JSON mode.
+    Test that logs CLI handles errors correctly in JSON mode.
     """
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
@@ -194,7 +194,7 @@ def test_cli_job_get_logs_json_error(fresh_deadline_config):
         runner = CliRunner()
         result = runner.invoke(
             main,
-            ["job", "get-logs", "--session-id", "test-session", "--output", "json"],
+            ["job", "logs", "--session-id", "test-session", "--output", "json"],
         )
 
         # Verify the output contains an error message
@@ -205,9 +205,9 @@ def test_cli_job_get_logs_json_error(fresh_deadline_config):
         assert result.exit_code != 0
 
 
-def test_cli_job_get_logs_with_time_params(fresh_deadline_config):
+def test_cli_job_logs_with_time_params(fresh_deadline_config):
     """
-    Test that get-logs CLI handles time parameters correctly.
+    Test that logs CLI handles time parameters correctly.
     """
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
@@ -220,7 +220,7 @@ def test_cli_job_get_logs_with_time_params(fresh_deadline_config):
             main,
             [
                 "job",
-                "get-logs",
+                "logs",
                 "--session-id",
                 "test-session",
                 "--start-time",
@@ -239,9 +239,9 @@ def test_cli_job_get_logs_with_time_params(fresh_deadline_config):
         assert kwargs["end_time"] == "2023-01-01T13:00:00Z"
 
 
-def test_cli_job_get_logs_with_next_token(fresh_deadline_config):
+def test_cli_job_logs_with_next_token(fresh_deadline_config):
     """
-    Test that get-logs CLI handles next_token parameter correctly.
+    Test that logs CLI handles next_token parameter correctly.
     """
     config.set_setting("defaults.farm_id", MOCK_FARM_ID)
     config.set_setting("defaults.queue_id", MOCK_QUEUE_ID)
@@ -254,7 +254,7 @@ def test_cli_job_get_logs_with_next_token(fresh_deadline_config):
             main,
             [
                 "job",
-                "get-logs",
+                "logs",
                 "--session-id",
                 "test-session",
                 "--next-token",

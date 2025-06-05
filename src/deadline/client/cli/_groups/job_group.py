@@ -823,11 +823,15 @@ def job_wait_for_completion(poll_interval, timeout, output, **args):
             raise DeadlineOperationError(f"Error waiting for job completion: {e}")
 
 
-@cli_job.command(name="get-logs")
+@cli_job.command(name="logs")
 @click.option("--profile", help="The AWS profile to use.")
 @click.option("--farm-id", help="The farm to use.")
 @click.option("--queue-id", help="The queue to use.")
-@click.option("--session-id", required=True, help="The session ID to get logs for.")
+@click.option("--job-id", help="The job to get logs for.")
+@click.option(
+    "--session-id",
+    help="The session ID to get logs for. If not provided and job-id is specified, will use the only session if there's just one.",
+)
 @click.option("--limit", default=100, help="Maximum number of log lines to return.")
 @click.option(
     "--start-time",
@@ -842,13 +846,17 @@ def job_wait_for_completion(poll_interval, timeout, output, **args):
     help="Output format (verbose or json).",
 )
 @_handle_error
-def job_get_logs(session_id, limit, start_time, end_time, next_token, output, **args):
+def job_logs(session_id, limit, start_time, end_time, next_token, output, **args):
     """
     Get CloudWatch logs for a specific session.
 
     This command retrieves logs from CloudWatch for the specified session ID.
     By default, it returns the most recent 100 log lines, but this can be
     adjusted using the --limit parameter.
+
+    If session-id is not provided but job-id is, the command will automatically
+    use the only session if there's just one, or return an error if multiple
+    sessions exist.
 
     Use --next-token with the value from a previous response to get the next page of results.
     """
@@ -857,8 +865,49 @@ def job_get_logs(session_id, limit, start_time, end_time, next_token, output, **
 
     farm_id = config_file.get_setting("defaults.farm_id", config=config)
     queue_id = config_file.get_setting("defaults.queue_id", config=config)
+    job_id = config_file.get_setting("defaults.job_id", config=config)
 
     is_json_output = output.lower() == "json"
+
+    # If session_id is not provided but job_id is, try to find the session
+    if not session_id and job_id:
+        deadline = api.get_boto3_client("deadline", config=config)
+        try:
+            response = deadline.list_sessions(farmId=farm_id, queueId=queue_id, jobId=job_id)
+            sessions = response.get("sessions", [])
+
+            # Handle pagination if there are more sessions
+            while "nextToken" in response:
+                response = deadline.list_sessions(
+                    farmId=farm_id,
+                    queueId=queue_id,
+                    jobId=job_id,
+                    nextToken=response["nextToken"],
+                )
+                sessions.extend(response.get("sessions", []))
+
+            if not sessions:
+                raise DeadlineOperationError(f"No sessions found for job {job_id}")
+            elif len(sessions) == 1:
+                session_id = sessions[0]["sessionId"]
+                if not is_json_output:
+                    click.echo(f"Using the only available session: {session_id}")
+            else:
+                # Multiple sessions found, show error with list of sessions
+                session_list = "\n".join([f"  - {s['sessionId']}" for s in sessions])
+                raise DeadlineOperationError(
+                    f"Multiple sessions found for job {job_id}. Please specify one with --session-id:\n{session_list}"
+                )
+        except ClientError as exc:
+            raise DeadlineOperationError(
+                f"Failed to list sessions for job {job_id}:\n{exc}"
+            ) from exc
+
+    # Ensure we have a session ID at this point
+    if not session_id:
+        raise DeadlineOperationError(
+            "Session ID is required. Provide it with --session-id or specify a --job-id with exactly one session."
+        )
 
     if not is_json_output:
         click.echo(
