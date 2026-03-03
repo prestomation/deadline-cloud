@@ -1,0 +1,100 @@
+name: Proxy Integration Tests
+
+on:
+  pull_request:
+    branches: [mainline]
+  push:
+    branches: [mainline, "feature/**"]
+  workflow_dispatch:
+
+jobs:
+  proxy-integration-test:
+    name: Proxy Integration Test (Linux)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade hatch
+          pip install -e .
+          pip install -r requirements-testing.txt
+          pip install -r requirements-integ-testing.txt
+          sudo apt-get update && sudo apt-get install -y socat
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.PROXY_INTEG_TEST_ROLE }}
+          aws-region: us-west-2
+
+      - name: Start MITM proxy
+        run: |
+          python3 test/integ/proxy_ca_bundle/connect_proxy.py \
+            /tmp/deadline_proxy.sock /tmp/deadline_proxy_ca.crt \
+            > /tmp/proxy_stdout.log 2>/tmp/proxy_stderr.log &
+          echo $! > /tmp/proxy_pid
+          sleep 2
+          cat /tmp/proxy_stdout.log
+
+      - name: Start credential bridge
+        run: |
+          if [ -n "${AWS_CONTAINER_CREDENTIALS_FULL_URI:-}" ]; then
+            CRED_PORT=$(echo "$AWS_CONTAINER_CREDENTIALS_FULL_URI" | \
+              sed -n 's|.*://[^:]*:\([0-9]*\).*|\1|p')
+            if [ -n "$CRED_PORT" ]; then
+              socat UNIX-LISTEN:/tmp/deadline_cred_bridge.sock,fork \
+                TCP:127.0.0.1:${CRED_PORT} &
+            fi
+          fi
+
+      - name: Run proxy-marked tests in network namespace
+        run: |
+          sudo -E env "PATH=$PATH" unshare --net \
+            bash test/integ/proxy_ca_bundle/run_in_namespace.sh
+        env:
+          FARM_ID: ${{ secrets.FARM_ID }}
+          QUEUE_ID: ${{ secrets.QUEUE_ID }}
+          JOB_ATTACHMENTS_BUCKET: ${{ secrets.JOB_ATTACHMENTS_BUCKET }}
+
+      - name: Proxy report
+        if: always()
+        run: |
+          echo "=== PROXY STDERR ==="
+          cat /tmp/proxy_stderr.log 2>/dev/null | tail -50 || true
+          echo "=== PROXY STATS ==="
+          python3 -c "
+          import socket, json, sys
+          try:
+              s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+              s.connect('/tmp/deadline_proxy_stats.sock')
+              data = s.recv(4096)
+              s.close()
+              stats = json.loads(data)
+              print('=' * 60)
+              print('PROXY REPORT')
+              print('=' * 60)
+              print(f'Connections proxied: {stats[\"connection_count\"]}')
+              print(f'Bytes relayed: {stats[\"bytes_relayed\"]}')
+              print(f'Hosts connected to: {len(stats[\"hosts\"])}')
+              for host, count in sorted(stats['hosts'].items(), key=lambda x: -x[1]):
+                  print(f'  {host}: {count} connections')
+              print('=' * 60)
+              if stats['connection_count'] == 0:
+                  print('ERROR: No connections went through proxy!')
+                  sys.exit(1)
+          except Exception as e:
+              print(f'Could not read proxy stats: {e}')
+          "
+
+      - name: Cleanup
+        if: always()
+        run: kill $(cat /tmp/proxy_pid 2>/dev/null) 2>/dev/null || true

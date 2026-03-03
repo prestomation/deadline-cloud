@@ -1,8 +1,12 @@
 #!/bin/bash
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
-# Run integration tests through an HTTP CONNECT proxy inside a network namespace.
-# This verifies HTTPS_PROXY and AWS_CA_BUNDLE are respected by all AWS SDK calls.
+# Run integration tests through a MITM TLS proxy inside a network namespace.
+# This verifies HTTPS_PROXY and AWS_CA_BUNDLE are respected by all network calls.
+#
+# The proxy generates an ephemeral CA and issues per-host certs on the fly.
+# Any code that ignores AWS_CA_BUNDLE will fail TLS verification because the
+# MITM cert is only trusted via that CA.
 #
 # Usage:
 #   sudo -E env "PATH=$PATH" bash scripts/run_proxy_integ_tests.sh [pytest args...]
@@ -11,17 +15,11 @@
 #   - Linux with socat installed (sudo apt-get install -y socat)
 #   - AWS credentials configured
 #   - pip install -e . && pip install -r requirements-integ-testing.txt
-#
-# The script:
-#   1. Starts a CONNECT proxy on a Unix socket (host namespace)
-#   2. Bridges credential endpoints via socat (host → Unix socket)
-#   3. Creates a network namespace with unshare --net
-#   4. Inside the namespace: socat bridges, pre-flight checks, pytest
-#   5. Prints proxy report (per-host connection counts, bytes relayed)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROXY_SOCK="/tmp/deadline_proxy.sock"
+CA_CERT="/tmp/deadline_proxy_ca.crt"
 CRED_SOCK="/tmp/deadline_cred_bridge.sock"
 PIDS_TO_KILL=()
 
@@ -34,10 +32,15 @@ trap cleanup EXIT
 
 # --- Host side setup ---
 
-# Start CONNECT proxy
-python3 "$SCRIPT_DIR/test/integ/proxy_ca_bundle/connect_proxy.py" "$PROXY_SOCK" &
+# Start MITM proxy (generates CA cert at $CA_CERT)
+python3 "$SCRIPT_DIR/test/integ/proxy_ca_bundle/connect_proxy.py" "$PROXY_SOCK" "$CA_CERT" &
 PIDS_TO_KILL+=($!)
-sleep 1
+sleep 2
+
+if [ ! -f "$CA_CERT" ]; then
+    echo "ERROR: CA cert not generated at $CA_CERT"
+    exit 1
+fi
 
 # Bridge credential endpoint if present
 if [ -n "${AWS_CONTAINER_CREDENTIALS_FULL_URI:-}" ]; then
@@ -101,9 +104,12 @@ finally:
     s.close()
 \"
 
+    # MITM CA — code must trust this via AWS_CA_BUNDLE or TLS fails
     export HTTPS_PROXY=http://127.0.0.1:8888
     export HTTP_PROXY=http://127.0.0.1:8888
-    export AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+    export AWS_CA_BUNDLE=$CA_CERT
+    export SSL_CERT_FILE=$CA_CERT
+    export REQUESTS_CA_BUNDLE=$CA_CERT
 
     python3 -m pytest --no-cov -vvv -s $PYTEST_ARGS --tb=short
 "

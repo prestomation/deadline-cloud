@@ -153,6 +153,7 @@ markers = [
   "docker: marks tests to be run only in a Docker environment",
   "cross_account: tests that run against other aws accounts",
   "asyncio: mark test as async",
+  "proxy: minimal client tests for proxy/CA bundle compliance",
 ]
 # looponfailroots is deprecated, this removes the deprecation from the test output
 filterwarnings = ["ignore::DeprecationWarning"]

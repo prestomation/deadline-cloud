@@ -7,7 +7,6 @@ import time
 
 from unittest.mock import patch, MagicMock
 from dataclasses import asdict
-from urllib import request
 
 from deadline.client import api, config
 from deadline.client.api._telemetry import (
@@ -30,7 +29,9 @@ def fixture_telemetry_client(fresh_deadline_config):
         "get_user_and_identity_store_id",
         side_effect=[("user-id", "identity-store-id")],
     ), patch.object(
-        api._telemetry, "get_deadline_endpoint_url", side_effect=["https://fake-endpoint-url"]
+        api._telemetry,
+        "get_deadline_endpoint_url",
+        side_effect=["https://fake-endpoint-url"],
     ):
         client = TelemetryClient(
             package_name="deadline-cloud-library",
@@ -48,7 +49,9 @@ def test_opt_out_config(fresh_deadline_config):
     config.set_setting("telemetry.opt_out", "true")
     # WHEN
     client = TelemetryClient(
-        "deadline-cloud-library", "test-version", config=config.config_file.read_config()
+        "deadline-cloud-library",
+        "test-version",
+        config=config.config_file.read_config(),
     )
     # THEN
     assert not client.is_initialized
@@ -80,7 +83,9 @@ def test_opt_out_env_var(fresh_deadline_config, monkeypatch, env_var_value):
     )  # Ensure we ignore the config file if env var is set
     # WHEN
     client = TelemetryClient(
-        "deadline-cloud-library", "test-version", config=config.config_file.read_config()
+        "deadline-cloud-library",
+        "test-version",
+        config=config.config_file.read_config(),
     )
     # THEN
     assert not client.is_initialized
@@ -123,7 +128,10 @@ def test_initialize_failure_then_success(fresh_deadline_config):
 
         client.initialize(config=config.config_file.read_config())
         assert client.is_initialized
-        assert client.endpoint == "https://management.fake-endpoint-url/2023-10-12/telemetry"
+        assert (
+            client.endpoint
+            == "https://management.fake-endpoint-url/2023-10-12/telemetry"
+        )
         assert client._system_metadata["user_id"] == "user-id"
         assert client._system_metadata["monitor_id"] == "monitor-id"
 
@@ -131,8 +139,12 @@ def test_initialize_failure_then_success(fresh_deadline_config):
 def test_get_telemetry_identifier(fresh_deadline_config, mock_telemetry_client):
     """Ensures that getting the local-user-id handles empty/malformed strings"""
     # Confirm that we generate a new UUID if the setting doesn't exist, and write to config
-    uuid.UUID(mock_telemetry_client.telemetry_id, version=4)  # Should not raise ValueError
-    assert config.get_setting("telemetry.identifier") == mock_telemetry_client.telemetry_id
+    uuid.UUID(
+        mock_telemetry_client.telemetry_id, version=4
+    )  # Should not raise ValueError
+    assert (
+        config.get_setting("telemetry.identifier") == mock_telemetry_client.telemetry_id
+    )
 
     # Confirm we generate a new UUID if the local_user_id is not a valid UUID
     config.set_setting("telemetry.identifier", "bad-id")
@@ -152,10 +164,14 @@ def test_process_event_queue_thread(fresh_deadline_config, mock_telemetry_client
     queue_mock = MagicMock()
     queue_mock.get.side_effect = [TelemetryEvent(), None]
     mock_telemetry_client.event_queue = queue_mock
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_http_session = MagicMock()
+    mock_http_session.send.return_value = mock_response
+    mock_telemetry_client._http_session = mock_http_session
     # WHEN
-    with patch.object(request, "urlopen") as urlopen_mock:
-        mock_telemetry_client._process_event_queue_thread()
-        urlopen_mock.assert_called_once()
+    mock_telemetry_client._process_event_queue_thread()
+    mock_http_session.send.assert_called_once()
     # THEN
     assert queue_mock.get.call_count == 2
 
@@ -174,16 +190,18 @@ def test_process_event_queue_thread_retries_and_exits(
 ):
     """Test that the thread exits cleanly after getting an unexpected exception"""
     # GIVEN
-    http_error = request.HTTPError("http://test.com", http_code, "Http Error", {}, None)  # type: ignore
+    mock_response = MagicMock()
+    mock_response.status_code = http_code
+    mock_http_session = MagicMock()
+    mock_http_session.send.return_value = mock_response
+    mock_telemetry_client._http_session = mock_http_session
     queue_mock = MagicMock()
     queue_mock.get.side_effect = [TelemetryEvent(), None]
     mock_telemetry_client.event_queue = queue_mock
     # WHEN
-    with patch.object(request, "urlopen", side_effect=http_error) as urlopen_mock, patch.object(
-        time, "sleep"
-    ) as sleep_mock:
+    with patch.object(time, "sleep") as sleep_mock:
         mock_telemetry_client._process_event_queue_thread()
-        urlopen_mock.call_count = attempt_count
+        mock_http_session.send.call_count = attempt_count
         sleep_mock.call_count = attempt_count
     # THEN
     assert queue_mock.get.call_count == 1
@@ -198,10 +216,12 @@ def test_process_event_queue_thread_handles_unexpected_error(
     queue_mock = MagicMock()
     queue_mock.get.side_effect = [TelemetryEvent(), None]
     mock_telemetry_client.event_queue = queue_mock
+    mock_http_session = MagicMock()
+    mock_http_session.send.side_effect = Exception("Some error")
+    mock_telemetry_client._http_session = mock_http_session
     # WHEN
-    with patch.object(request, "urlopen", side_effect=Exception("Some error")) as urlopen_mock:
-        mock_telemetry_client._process_event_queue_thread()
-        urlopen_mock.assert_called_once()
+    mock_telemetry_client._process_event_queue_thread()
+    mock_http_session.send.assert_called_once()
     # THEN
     assert queue_mock.get.call_count == 1
 
@@ -312,13 +332,18 @@ def test_get_prefixed_endpoint(
     expected_result: str,
 ):
     """Test that the _get_prefixed_endpoint function returns the expected prefixed endpoint"""
-    assert mock_telemetry_client._get_prefixed_endpoint(endpoint, prefix) == expected_result
+    assert (
+        mock_telemetry_client._get_prefixed_endpoint(endpoint, prefix)
+        == expected_result
+    )
 
 
 def test_record_decorator_success(fresh_deadline_config):
     """Tests that recording a decorator successful metric"""
     with patch.object(
-        api._telemetry, "get_deadline_endpoint_url", side_effect=["https://fake-endpoint-url"]
+        api._telemetry,
+        "get_deadline_endpoint_url",
+        side_effect=["https://fake-endpoint-url"],
     ):
         # GIVEN
         queue_mock = MagicMock()
@@ -342,7 +367,7 @@ def test_record_decorator_success(fresh_deadline_config):
                 return
 
             # WHEN
-            successful()  # type:ignore
+            successful()  # type: ignore
 
         # THEN
         queue_mock.put_nowait.assert_called_once_with(expected_event)
@@ -351,7 +376,9 @@ def test_record_decorator_success(fresh_deadline_config):
 def test_record_decorator_fails(fresh_deadline_config):
     """Tests that recording a decorator failed metric"""
     with patch.object(
-        api._telemetry, "get_deadline_endpoint_url", side_effect=["https://fake-endpoint-url"]
+        api._telemetry,
+        "get_deadline_endpoint_url",
+        side_effect=["https://fake-endpoint-url"],
     ):
         # GIVEN
         queue_mock = MagicMock()
@@ -377,7 +404,7 @@ def test_record_decorator_fails(fresh_deadline_config):
 
             # WHEN
             with pytest.raises(RuntimeError):
-                fails()  # type:ignore
+                fails()  # type: ignore
 
         # THEN
         queue_mock.put_nowait.assert_called_once_with(expected_event)
@@ -386,7 +413,9 @@ def test_record_decorator_fails(fresh_deadline_config):
 def test_latency_decorator(fresh_deadline_config):
     """Tests that the latency recording decorator works"""
     with patch.object(
-        api._telemetry, "get_deadline_endpoint_url", side_effect=["https://fake-endpoint-url"]
+        api._telemetry,
+        "get_deadline_endpoint_url",
+        side_effect=["https://fake-endpoint-url"],
     ), patch.object(time, "perf_counter_ns", return_value=0):
         # GIVEN
         queue_mock = MagicMock()
@@ -411,7 +440,7 @@ def test_latency_decorator(fresh_deadline_config):
                 return
 
             # WHEN
-            test_call()  # type:ignore
+            test_call()  # type: ignore
 
         # THEN
         queue_mock.put_nowait.assert_called_once_with(expected_event)

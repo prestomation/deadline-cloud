@@ -18,7 +18,6 @@ from datetime import datetime
 from queue import Queue, Full
 from threading import Thread
 from typing import Any, Callable, Dict, Optional, TypeVar, cast
-from urllib import request, error
 
 from ...job_attachments.progress_tracker import SummaryStatistics
 
@@ -54,6 +53,13 @@ class TelemetryEvent:
 
     event_type: str = "com.amazon.rum.deadline.uncategorized"
     event_details: Dict[str, Any] = field(default_factory=dict)
+
+
+class _RetryableTelemetryError(Exception):
+    """Raised internally when a telemetry request gets a retryable HTTP status code."""
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
 
 
 class TelemetryClient:
@@ -144,11 +150,16 @@ class TelemetryClient:
                 TelemetryClient.ENDPOINT_PREFIX,
             )
 
-            # Some environments might not have SSL, so we'll use the vendored botocore SSL context
-            from botocore.httpsession import create_urllib3_context, get_cert_path
+            # Use botocore's HTTP session which respects proxy config from env vars
+            # and handles SSL/CA certs consistently with boto3.
+            from botocore.httpsession import URLLib3Session
+            from botocore.utils import get_environ_proxies
 
-            self._urllib3_context = create_urllib3_context()
-            self._urllib3_context.load_verify_locations(cafile=get_cert_path(True))
+            proxies = get_environ_proxies(self.endpoint)
+            # Resolve CA bundle the same way botocore does for its clients:
+            # AWS_CA_BUNDLE env var > default certifi bundle
+            ca_bundle = os.environ.get("AWS_CA_BUNDLE", True)
+            self._http_session = URLLib3Session(verify=ca_bundle, proxies=proxies)
 
             user_id, _ = get_user_and_identity_store_id(config=config)
             if user_id:
@@ -206,7 +217,9 @@ class TelemetryClient:
             "service": self.package_name,
             "version": self.package_ver,
             "python_version": platform.python_version(),
-            "osName": "macOS" if platform_info.system == "Darwin" else platform_info.system,
+            "osName": (
+                "macOS" if platform_info.system == "Darwin" else platform_info.system
+            ),
             "osVersion": platform_info.release,
         }
 
@@ -222,35 +235,42 @@ class TelemetryClient:
             pass
         self.processing_thread.join()
 
-    def _send_request(self, req: request.Request) -> None:
+    def _send_request(self, req) -> None:
         attempts = 0
         success = False
         while not success:
             try:
-                with request.urlopen(req, context=self._urllib3_context):
-                    logger.debug("Successfully sent telemetry.")
-                    success = True
-            except error.HTTPError as httpe:
-                if httpe.code == 429 or httpe.code == 500:
-                    logger.debug(f"Error received from service. Waiting to retry: {str(httpe)}")
-
-                    attempts += 1
-                    if attempts >= TelemetryClient.MAX_RETRY_ATTEMPTS:
-                        raise Exception("Max retries reached sending telemetry")
-
-                    backoff_sleep = random.uniform(
-                        0,
-                        min(
-                            TelemetryClient.MAX_BACKOFF_SECONDS,
-                            TelemetryClient.BASE_TIME * 2**attempts,
-                        ),
+                response = self._http_session.send(req)
+                if response.status_code == 429 or response.status_code == 500:
+                    raise _RetryableTelemetryError(response.status_code)
+                if response.status_code >= 400:
+                    raise Exception(
+                        f"Telemetry request failed with HTTP {response.status_code}"
                     )
-                    time.sleep(backoff_sleep)
-                else:  # Reraise any exceptions we didn't expect
-                    raise
+                logger.debug("Successfully sent telemetry.")
+                success = True
+            except _RetryableTelemetryError:
+                logger.debug(
+                    f"Error received from service (HTTP {response.status_code}). Waiting to retry."
+                )
+
+                attempts += 1
+                if attempts >= TelemetryClient.MAX_RETRY_ATTEMPTS:
+                    raise Exception("Max retries reached sending telemetry")
+
+                backoff_sleep = random.uniform(
+                    0,
+                    min(
+                        TelemetryClient.MAX_BACKOFF_SECONDS,
+                        TelemetryClient.BASE_TIME * 2**attempts,
+                    ),
+                )
+                time.sleep(backoff_sleep)
 
     def _process_event_queue_thread(self):
         """Background thread for processing the telemetry event data queue and sending telemetry requests."""
+        from botocore.awsrequest import AWSRequest
+
         while True:
             # Blocks until we get a new entry in the queue
             event_data: Optional[TelemetryEvent] = self.event_queue.get()
@@ -271,14 +291,22 @@ class TelemetryClient:
                             "type": event_data.event_type,
                         },
                     ],
-                    "UserDetails": {"sessionId": self.session_id, "userId": self.telemetry_id},
+                    "UserDetails": {
+                        "sessionId": self.session_id,
+                        "userId": self.telemetry_id,
+                    },
                 }
                 request_body_encoded = str(json.dumps(request_body)).encode("utf-8")
             except Exception as exc:
                 logger.debug(f"Failed to serialize telemetry data. {str(exc)}")
                 continue
 
-            req = request.Request(url=self.endpoint, data=request_body_encoded, headers=headers)
+            req = AWSRequest(
+                method="POST",
+                url=self.endpoint,
+                data=request_body_encoded,
+                headers=headers,
+            )
             try:
                 logger.debug("Sending telemetry data: %s", request_body)
                 self._send_request(req)
@@ -306,14 +334,20 @@ class TelemetryClient:
         self, event_type: str, summary: SummaryStatistics, from_gui: bool
     ):
         details: Dict[str, Any] = asdict(summary)
-        self.record_event(event_type=event_type, event_details=details, from_gui=from_gui)
+        self.record_event(
+            event_type=event_type, event_details=details, from_gui=from_gui
+        )
 
-    def record_hashing_summary(self, summary: SummaryStatistics, *, from_gui: bool = False):
+    def record_hashing_summary(
+        self, summary: SummaryStatistics, *, from_gui: bool = False
+    ):
         self._record_summary_statistics(
             "com.amazon.rum.deadline.job_attachments.hashing_summary", summary, from_gui
         )
 
-    def record_upload_summary(self, summary: SummaryStatistics, *, from_gui: bool = False):
+    def record_upload_summary(
+        self, summary: SummaryStatistics, *, from_gui: bool = False
+    ):
         self._record_summary_statistics(
             "com.amazon.rum.deadline.job_attachments.upload_summary", summary, from_gui
         )
@@ -323,13 +357,17 @@ class TelemetryClient:
     ):
         event_details["exception_type"] = exception_type
         # Possibility to add stack trace here
-        self.record_event("com.amazon.rum.deadline.error", event_details, from_gui=from_gui)
+        self.record_event(
+            "com.amazon.rum.deadline.error", event_details, from_gui=from_gui
+        )
 
     def record_event(
         self, event_type: str, event_details: Dict[str, Any], *, from_gui: bool = False
     ):
         try:
-            self.update_common_details({"accountId": self.get_account_id(get_boto3_session())})
+            self.update_common_details(
+                {"accountId": self.get_account_id(get_boto3_session())}
+            )
         except Exception as e:
             # Print any errors when getting the boto3 session, then proceed
             logger.debug(f"Could not add account ID to telemetry: {str(e)}")
@@ -433,7 +471,9 @@ def record_success_fail_telemetry_event(**decorator_kwargs: Any) -> Callable[[F]
     return inner
 
 
-def record_function_latency_telemetry_event(**decorator_kwargs: Any) -> Callable[[F], F]:
+def record_function_latency_telemetry_event(
+    **decorator_kwargs: Any,
+) -> Callable[[F], F]:
     """
     Decorator to time a function. Sends a latency telemetry event.
     :param ** Python variable arguments. See https://docs.python.org/3/glossary.html#term-parameter.
