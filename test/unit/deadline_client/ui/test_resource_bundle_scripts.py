@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,10 +26,19 @@ def _embedded_bash_scripts():
                     )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def test_embedded_bash_scripts_are_found() -> None:
+    ids = [param.id for param in _embedded_bash_scripts()]
+    assert "blender_example_bundle:RenderBlender:run" in ids
+
+
+# On Windows, bash may resolve to the WSL launcher, which fails without a distro.
+@pytest.mark.skipif(
+    sys.platform.startswith("win") or shutil.which("bash") is None,
+    reason="Needs a native bash",
+)
 @pytest.mark.parametrize("script", list(_embedded_bash_scripts()))
 def test_embedded_bash_script_has_valid_syntax(script: str) -> None:
     result = subprocess.run(
-        ["bash", "-n"], input=script, capture_output=True, text=True, check=False
+        ["bash", "-n"], input=script.encode("utf-8"), capture_output=True, check=False
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
